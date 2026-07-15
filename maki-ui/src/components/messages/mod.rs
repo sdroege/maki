@@ -28,6 +28,8 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::Instant;
 
+use unicode_width::UnicodeWidthStr;
+
 use super::scrollbar::render_vertical_scrollbar;
 use super::streaming_content::StreamingContent;
 use maki_agent::{
@@ -900,8 +902,19 @@ impl MessagesPanel {
         self.cache.search_texts()
     }
 
-    pub fn extract_selection_text(&self, sel: &Selection, msg_area: Rect) -> String {
-        selection::extract_selection_text(&self.cache, self.viewport_width, sel, msg_area)
+    pub fn extract_selection_text(
+        &self,
+        sel: &Selection,
+        msg_area: Rect,
+        copy_markdown: bool,
+    ) -> String {
+        selection::extract_selection_text(
+            &self.cache,
+            self.viewport_width,
+            sel,
+            msg_area,
+            copy_markdown,
+        )
     }
 
     fn tool_in_progress(&self, tool_id: &str) -> bool {
@@ -1258,6 +1271,7 @@ impl MessagesPanel {
                 self.cache.push_spacer_if_needed();
                 let mut seg = Segment::with_tool(id.clone());
                 seg.search_text = search_text;
+                seg.raw_text = Some(msg.text.clone());
                 seg.apply_highlight(tl, &self.hl_worker);
                 self.cache.push(seg);
 
@@ -1275,8 +1289,13 @@ impl MessagesPanel {
                     let lines = self.build_cached_thinking_indicator(&text);
                     let search_text = format!("thinking> {text}");
                     self.cache.push_spacer_if_needed();
-                    self.cache
-                        .push(Segment::with_lines(lines, search_text, Some(i)));
+                    self.cache.push(Segment::with_lines(
+                        lines,
+                        search_text,
+                        Some(text),
+                        0,
+                        Some(i),
+                    ));
                     continue;
                 }
                 let style = match &msg.role {
@@ -1328,10 +1347,16 @@ impl MessagesPanel {
                     )));
                 }
 
+                let prefix_width = prefix.width() as u16;
                 let search_text = format!("{prefix}{}", msg.text);
                 self.cache.push_spacer_if_needed();
-                self.cache
-                    .push(Segment::with_lines(lines, search_text, Some(i)));
+                self.cache.push(Segment::with_lines(
+                    lines,
+                    search_text,
+                    Some(msg.text.clone()),
+                    prefix_width,
+                    Some(i),
+                ));
             }
         }
         self.cache.mark_built(self.messages.len());

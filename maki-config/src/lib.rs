@@ -337,6 +337,7 @@ pub struct UiFileConfig {
     pub clock_format: Option<ClockFormat>,
     pub tool_output_lines: Option<ToolOutputLinesFile>,
     pub max_input_lines: Option<u32>,
+    pub copy_markdown: Option<bool>,
 }
 
 impl UiFileConfig {
@@ -352,7 +353,8 @@ impl UiFileConfig {
             show_thinking,
             theme,
             clock_format,
-            max_input_lines
+            max_input_lines,
+            copy_markdown
         );
         match (self.tool_output_lines.as_mut(), overlay.tool_output_lines) {
             (Some(base), Some(over)) => base.merge(over),
@@ -867,6 +869,12 @@ pub struct UiConfig {
 
     #[config(skip, default = "ToolOutputLines::default()")]
     pub tool_output_lines: ToolOutputLines,
+
+    #[config(
+        default = false,
+        desc = "Copy underlying markdown instead of rendered text when selecting message content"
+    )]
+    pub copy_markdown: bool,
 }
 
 impl UiConfig {
@@ -888,6 +896,7 @@ impl UiConfig {
             clock_format: f.clock_format.unwrap_or_default(),
             theme: f.theme,
             tool_output_lines: ToolOutputLines::from_file(f.tool_output_lines),
+            copy_markdown: f.copy_markdown.unwrap_or(false),
         }
     }
 

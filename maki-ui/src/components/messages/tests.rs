@@ -708,8 +708,126 @@ fn extract_partial_column_selection() {
     let area = Rect::new(0, 0, 80, 24);
     let world_start = MAKI_PREFIX_LEN + "Hello ".len() as u16;
     let sel = make_sel(area, (0, world_start), (0, world_start + 4));
-    let text = panel.extract_selection_text(&sel, area);
+    let text = panel.extract_selection_text(&sel, area, false);
     assert_eq!(text, "world");
+}
+#[test]
+fn extract_copy_markdown_returns_raw_source() {
+    let md = "# Heading\n\nSome **bold** text";
+    let panel = panel_with_msgs(&[md], 80, 24);
+    let area = Rect::new(0, 0, 80, 24);
+    let total: u16 = panel.segment_heights().iter().sum();
+    let sel = make_sel(area, (0, 0), ((total - 1) as u32, 79));
+
+    let raw = panel.extract_selection_text(&sel, area, true);
+    assert_eq!(raw, md, "copy_markdown=true should return raw source");
+
+    let rendered = panel.extract_selection_text(&sel, area, false);
+    assert!(
+        rendered.contains("Heading"),
+        "copy_markdown=false should return rendered text"
+    );
+    assert!(
+        !rendered.contains("**bold**"),
+        "rendered text should not contain markdown syntax: {rendered:?}"
+    );
+}
+
+#[test]
+fn extract_copy_markdown_multiple_segments() {
+    let panel = panel_with_msgs(&["**bold**", "*italic*"], 80, 24);
+    let area = Rect::new(0, 0, 80, 24);
+    let total: u16 = panel.segment_heights().iter().sum();
+    let sel = make_sel(area, (0, 0), ((total - 1) as u32, 79));
+
+    let raw = panel.extract_selection_text(&sel, area, true);
+    assert_eq!(raw, "**bold**\n\n*italic*");
+}
+
+#[test]
+fn extract_copy_markdown_partial_single_line() {
+    let panel = panel_with_msgs(&["Hello world from markdown"], 80, 24);
+    let area = Rect::new(0, 0, 80, 24);
+    let world_start = MAKI_PREFIX_LEN + "Hello ".len() as u16;
+    let sel = make_sel(area, (0, world_start), (0, world_start + 4));
+    let raw = panel.extract_selection_text(&sel, area, true);
+    assert_eq!(raw, "world");
+}
+
+#[test]
+fn extract_copy_markdown_partial_multi_line() {
+    let panel = panel_with_msgs(&["line one\nline two\nline three"], 80, 24);
+    let area = Rect::new(0, 0, 80, 24);
+    let heights = panel.segment_heights();
+    let seg_h = heights.iter().sum::<u16>();
+    // Select from row 1 to row seg_h - 1 (skip first rendered row, include last)
+    let sel = make_sel(area, (1, MAKI_PREFIX_LEN), ((seg_h - 1) as u32, 79));
+    let raw = panel.extract_selection_text(&sel, area, true);
+    assert!(raw.contains("line two"));
+    assert!(!raw.contains("line one"));
+}
+
+#[test]
+fn extract_copy_markdown_wrapped_second_row() {
+    // Long line that wraps at wrap_width 34 (40 - 6 prefix).
+    // Row 0: "The quick brown fox jumps over" (30 chars, breaks at space before "the")
+    // Row 1: "the lazy dog again" (18 chars)
+    let panel = panel_with_msgs(
+        &["The quick brown fox jumps over the lazy dog again"],
+        40,
+        24,
+    );
+    let area = Rect::new(0, 0, 40, 24);
+    // Select only the second rendered row, full width
+    let sel = make_sel(area, (1, MAKI_PREFIX_LEN), (1, 39));
+    let raw = panel.extract_selection_text(&sel, area, true);
+    assert_eq!(raw, "the lazy dog again");
+}
+
+#[test]
+fn extract_copy_markdown_single_char() {
+    let panel = panel_with_msgs(&["abcde"], 80, 24);
+    let area = Rect::new(0, 0, 80, 24);
+    // Select just 'c' (index 2, after "maki> " prefix of 6)
+    let col = MAKI_PREFIX_LEN + 2;
+    let sel = make_sel(area, (0, col), (0, col));
+    let raw = panel.extract_selection_text(&sel, area, true);
+    assert_eq!(raw, "c");
+}
+
+#[test]
+fn extract_copy_markdown_wrapped_multi_row_same_source() {
+    // Single long line that wraps into 2 rendered rows at wrap_width 34 (40 - 6 prefix).
+    // Row 0: "The quick brown fox jumps over" (30 chars)
+    // Row 1: "the lazy dog again" (18 chars)
+    let panel = panel_with_msgs(
+        &["The quick brown fox jumps over the lazy dog again"],
+        40,
+        24,
+    );
+    let area = Rect::new(0, 0, 40, 24);
+    // Select from row 0, col after "The " to row 1, end
+    let sel = make_sel(area, (0, MAKI_PREFIX_LEN + 4), (1, 39));
+    let raw = panel.extract_selection_text(&sel, area, true);
+    assert_eq!(raw, "quick brown fox jumps over\nthe lazy dog again");
+}
+
+#[test]
+fn extract_copy_markdown_partial_across_segments() {
+    let panel = panel_with_msgs(&["alpha beta", "gamma delta"], 80, 24);
+    let heights = panel.segment_heights();
+    let area = Rect::new(0, 0, 80, 24);
+    // Segment 0 at row 0, spacer at row 1, segment 1 at row 2
+    let seg2_row: u32 = heights[0] as u32 + heights[1] as u32;
+    // Select "beta" from first segment and "gamma" from second
+    let beta_start = MAKI_PREFIX_LEN + "alpha ".len() as u16;
+    let gamma_end = MAKI_PREFIX_LEN + "gamma".len() as u16;
+    let sel = make_sel(area, (0, beta_start), (seg2_row, gamma_end));
+    let raw = panel.extract_selection_text(&sel, area, true);
+    assert!(raw.contains("beta"));
+    assert!(raw.contains("gamma"));
+    assert!(!raw.contains("alpha"));
+    assert!(!raw.contains("delta"));
 }
 
 #[test]
@@ -720,7 +838,7 @@ fn extract_skips_out_of_range_segments() {
     let mid = total / 2;
     let area = Rect::new(0, 0, 80, 24);
     let sel = make_sel(area, (mid as u32, 0), (mid as u32, 79));
-    let text = panel.extract_selection_text(&sel, area);
+    let text = panel.extract_selection_text(&sel, area, false);
     assert!(text.contains("seg1"));
     assert!(!text.contains("seg0"));
     assert!(!text.contains("seg2"));
@@ -741,7 +859,7 @@ fn extract_off_screen_rows_via_temp_buffer() {
     let sel_area = Rect::new(0, 0, 80, total);
     let sel = make_sel(sel_area, (1, 0), ((total - 1) as u32, 79));
 
-    let extracted = panel.extract_selection_text(&sel, sel_area);
+    let extracted = panel.extract_selection_text(&sel, sel_area, false);
     assert!(!extracted.contains("line 0"), "first line excluded");
     assert!(extracted.contains("line 1") && extracted.contains("line 19"));
 }
@@ -753,7 +871,7 @@ fn extract_mixed_fully_enclosed_and_partial() {
     let area = Rect::new(0, 0, 80, 24);
     let seg1_start = heights[0] + heights[1];
     let sel = make_sel(area, (0, 0), (seg1_start as u32, MAKI_PREFIX_LEN + 6));
-    let text = panel.extract_selection_text(&sel, area);
+    let text = panel.extract_selection_text(&sel, area, false);
     assert!(text.contains("full segment"));
     assert!(text.contains("partial"));
 }
@@ -770,8 +888,8 @@ fn extract_partial_col_symmetric(msgs: &[&str], expect_start: &str, expect_end: 
     let area = Rect::new(0, 0, 80, 24);
     let down = make_sel(area, (0, MAKI_PREFIX_LEN), ((total - 1) as u32, 79));
     let up = make_sel(area, ((total - 1) as u32, 79), (0, MAKI_PREFIX_LEN));
-    let text_down = panel.extract_selection_text(&down, area);
-    let text_up = panel.extract_selection_text(&up, area);
+    let text_down = panel.extract_selection_text(&down, area, false);
+    let text_up = panel.extract_selection_text(&up, area, false);
     assert!(text_down.contains(expect_start));
     assert!(text_down.contains(expect_end));
     assert_eq!(text_down, text_up, "direction should not affect result");
@@ -788,7 +906,7 @@ fn extract_wrapped_no_soft_breaks(template: &str, anchor: (u32, u16)) {
     let total: u16 = panel.segment_heights().iter().sum();
     let area = Rect::new(0, 0, 40, 30);
     let sel = make_sel(area, anchor, ((total - 1) as u32, 39));
-    let text = panel.extract_selection_text(&sel, area);
+    let text = panel.extract_selection_text(&sel, area, false);
     assert!(
         text.contains(&long),
         "wrapped line must be copied without newlines: {text:?}"
@@ -807,7 +925,7 @@ fn extract_partial_last_line_truncated() {
     let area = Rect::new(0, 0, 80, 24);
     let last_row = (total - 1) as u32;
     let sel = make_sel(area, (0, 0), (last_row, 3));
-    let text = panel.extract_selection_text(&sel, area);
+    let text = panel.extract_selection_text(&sel, area, false);
     assert_eq!(text.lines().last().unwrap(), "ABCD");
 }
 
@@ -860,7 +978,7 @@ fn extract_selection_copies_visible_content_only() {
     let area = Rect::new(0, 0, 80, 24);
     let total: u16 = panel.segment_heights().iter().sum();
     let sel = make_sel(area, (0, 0), ((total - 1) as u32, 79));
-    let text = panel.extract_selection_text(&sel, area);
+    let text = panel.extract_selection_text(&sel, area, false);
     assert!(
         !text.contains("line 50"),
         "truncated line should not be copied"

@@ -180,7 +180,11 @@ impl App {
         let text = match sel.zone {
             SelectionZone::Messages => {
                 let msg_area = self.msg_area();
-                self.chats[render_chat].extract_selection_text(sel, msg_area)
+                self.chats[render_chat].extract_selection_text(
+                    sel,
+                    msg_area,
+                    self.ui_config.copy_markdown,
+                )
             }
             SelectionZone::Input => {
                 let scroll = self.scroll_offset(sel.zone);
@@ -195,6 +199,7 @@ impl App {
                     area: input_area,
                     raw_text: &copy_text,
                     line_breaks,
+                    copy_markdown: true,
                 }];
                 selection::extract_selected_text(buf, &screen_sel, &regions)
             }
@@ -206,6 +211,7 @@ impl App {
                 };
                 let regions = [ContentRegion {
                     area: sel.area,
+                    copy_markdown: self.ui_config.copy_markdown,
                     ..Default::default()
                 }];
                 selection::extract_selected_text(buf, &screen_sel, &regions)

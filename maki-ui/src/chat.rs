@@ -240,8 +240,14 @@ impl Chat {
         self.messages_panel.segment_search_texts()
     }
 
-    pub fn extract_selection_text(&self, sel: &Selection, msg_area: Rect) -> String {
-        self.messages_panel.extract_selection_text(sel, msg_area)
+    pub fn extract_selection_text(
+        &self,
+        sel: &Selection,
+        msg_area: Rect,
+        copy_markdown: bool,
+    ) -> String {
+        self.messages_panel
+            .extract_selection_text(sel, msg_area, copy_markdown)
     }
 
     pub fn handle_click(&mut self, row: u16, area: Rect) {

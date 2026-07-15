@@ -422,12 +422,14 @@ fn is_code_wrap_continuation(line: &Line<'_>) -> bool {
 }
 
 /// When `raw_text` is set and the region is fully selected we use the
-/// source text verbatim instead of scraping cells.
+/// source text verbatim instead of scraping cells. With `copy_markdown`
+/// enabled, raw text is preferred over rendered output for messages too.
 #[derive(Default)]
 pub struct ContentRegion<'a> {
     pub area: Rect,
     pub raw_text: &'a str,
     pub line_breaks: LineBreaks,
+    pub copy_markdown: bool,
 }
 
 pub fn inset_border(area: Rect) -> Rect {
@@ -619,7 +621,7 @@ pub fn extract_selected_text(
         if !out.is_empty() {
             out.push('\n');
         }
-        if fully_selected && !region.raw_text.is_empty() {
+        if fully_selected && !region.raw_text.is_empty() && region.copy_markdown {
             out.push_str(region.raw_text);
         } else {
             let chunk_end = region_end.min(ss.end_row + 1);
@@ -688,6 +690,7 @@ mod tests {
         let region = ContentRegion {
             area,
             raw_text: raw,
+            copy_markdown: true,
             ..Default::default()
         };
         let text = extract_selected_text(&buf, &sel, &[region]);
@@ -708,16 +711,19 @@ mod tests {
             ContentRegion {
                 area: Rect::new(0, 0, 10, 1),
                 raw_text: "Line 0",
+                copy_markdown: true,
                 ..Default::default()
             },
             ContentRegion {
                 area: Rect::new(0, 2, 10, 1),
                 raw_text: "Line 2",
+                copy_markdown: true,
                 ..Default::default()
             },
             ContentRegion {
                 area: Rect::new(0, 4, 10, 1),
                 raw_text: "Line 4",
+                copy_markdown: true,
                 ..Default::default()
             },
         ];
@@ -736,11 +742,13 @@ mod tests {
         let base = ContentRegion {
             area: Rect::new(0, 0, 10, 3),
             raw_text: "base raw text",
+            copy_markdown: true,
             ..Default::default()
         };
         let overlay = ContentRegion {
             area: Rect::new(0, 0, 10, 3),
             raw_text: "overlay raw text",
+            copy_markdown: true,
             ..Default::default()
         };
         let text = extract_selected_text(&buf, &ss(0, 0, 2, 9), &[base, overlay]);
