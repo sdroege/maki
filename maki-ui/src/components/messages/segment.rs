@@ -61,6 +61,9 @@ pub(super) struct Segment {
     pub spinner_lines: Vec<(usize, usize)>,
     snapshot_base: Option<usize>,
     pub content_indent: &'static str,
+    /// True when `lines` are a faithful rendering of `raw_text` via
+    /// text_to_lines or plain_lines. Gates the source-map copy path.
+    pub has_source_map: bool,
 }
 
 impl Segment {
@@ -101,6 +104,7 @@ impl Segment {
 
     pub fn set_lines(&mut self, lines: Vec<Line<'static>>) {
         self.lines = lines;
+        self.has_source_map = false;
         self.invalidate_height();
     }
 

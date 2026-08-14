@@ -760,11 +760,24 @@ fn extract_copy_markdown_partial_multi_line() {
     let area = Rect::new(0, 0, 80, 24);
     let heights = panel.segment_heights();
     let seg_h = heights.iter().sum::<u16>();
-    // Select from row 1 to row seg_h - 1 (skip first rendered row, include last)
-    let sel = make_sel(area, (1, MAKI_PREFIX_LEN), ((seg_h - 1) as u32, 79));
+    // Select from row 1 to row seg_h - 1 (skip first rendered row, include last).
+    // Continuation rows have no message prefix, so full width starts at col 0.
+    let sel = make_sel(area, (1, 0), ((seg_h - 1) as u32, 79));
     let raw = panel.extract_selection_text(&sel, area, true);
     assert!(raw.contains("line two"));
     assert!(!raw.contains("line one"));
+}
+
+#[test]
+fn extract_copy_markdown_across_formatting() {
+    // Partial formatting row + fully selected following row: the closing
+    // `**` of the unselected "bo" must not leak into the gap.
+    let panel = panel_with_msgs(&["**bold**\nline two"], 80, 24);
+    let area = Rect::new(0, 0, 80, 24);
+    // "ld" of row 0 (after prefix) + full "line two" row 1.
+    let sel = make_sel(area, (0, MAKI_PREFIX_LEN + 2), (1, 7));
+    let raw = panel.extract_selection_text(&sel, area, true);
+    assert_eq!(raw, "ld\nline two");
 }
 
 #[test]
@@ -778,8 +791,8 @@ fn extract_copy_markdown_wrapped_second_row() {
         24,
     );
     let area = Rect::new(0, 0, 40, 24);
-    // Select only the second rendered row, full width
-    let sel = make_sel(area, (1, MAKI_PREFIX_LEN), (1, 39));
+    // Select only the second rendered row, full width (no prefix on row 1)
+    let sel = make_sel(area, (1, 0), (1, 39));
     let raw = panel.extract_selection_text(&sel, area, true);
     assert_eq!(raw, "the lazy dog again");
 }
@@ -793,6 +806,16 @@ fn extract_copy_markdown_single_char() {
     let sel = make_sel(area, (0, col), (0, col));
     let raw = panel.extract_selection_text(&sel, area, true);
     assert_eq!(raw, "c");
+}
+
+#[test]
+fn extract_copy_markdown_wide_char_full_row() {
+    let panel = panel_with_msgs(&["hello 🦀 world"], 80, 24);
+    let area = Rect::new(0, 0, 80, 24);
+    // 🦀 is double-width; the full row must copy the raw emoji intact.
+    let sel = make_sel(area, (0, MAKI_PREFIX_LEN), (0, 79));
+    let raw = panel.extract_selection_text(&sel, area, true);
+    assert_eq!(raw, "hello 🦀 world");
 }
 
 #[test]
@@ -829,6 +852,520 @@ fn extract_copy_markdown_partial_across_segments() {
     assert!(!raw.contains("alpha"));
     assert!(!raw.contains("delta"));
 }
+
+// ── Inline formatting ──
+
+#[test]
+fn extract_copy_markdown_partial_bold() {
+    let panel = panel_with_msgs(&["**bold**"], 80, 24);
+    let area = Rect::new(0, 0, 80, 24);
+    // Rendered: "maki> bold" — select "bo" (cols 6-7)
+    let sel = make_sel(area, (0, MAKI_PREFIX_LEN), (0, MAKI_PREFIX_LEN + 1));
+    let raw = panel.extract_selection_text(&sel, area, true);
+    assert_eq!(raw, "bo");
+}
+
+#[test]
+fn extract_copy_markdown_bold_full_row() {
+    let panel = panel_with_msgs(&["**bold**"], 80, 24);
+    let area = Rect::new(0, 0, 80, 24);
+    // Select full rendered row
+    let sel = make_sel(area, (0, MAKI_PREFIX_LEN), (0, 79));
+    let raw = panel.extract_selection_text(&sel, area, true);
+    assert_eq!(raw, "**bold**");
+}
+
+#[test]
+fn extract_copy_markdown_single_char_in_bold() {
+    let panel = panel_with_msgs(&["**bold**"], 80, 24);
+    let area = Rect::new(0, 0, 80, 24);
+    // Select just 'b' (col 6)
+    let sel = make_sel(area, (0, MAKI_PREFIX_LEN), (0, MAKI_PREFIX_LEN));
+    let raw = panel.extract_selection_text(&sel, area, true);
+    assert_eq!(raw, "b");
+}
+
+#[test]
+fn extract_copy_markdown_partial_italic() {
+    let panel = panel_with_msgs(&["*italic*"], 80, 24);
+    let area = Rect::new(0, 0, 80, 24);
+    // Rendered: "maki> italic" — select "it" (cols 6-7)
+    let sel = make_sel(area, (0, MAKI_PREFIX_LEN), (0, MAKI_PREFIX_LEN + 1));
+    let raw = panel.extract_selection_text(&sel, area, true);
+    assert_eq!(raw, "it");
+}
+
+#[test]
+fn extract_copy_markdown_italic_full_row() {
+    let panel = panel_with_msgs(&["*italic*"], 80, 24);
+    let area = Rect::new(0, 0, 80, 24);
+    let sel = make_sel(area, (0, MAKI_PREFIX_LEN), (0, 79));
+    let raw = panel.extract_selection_text(&sel, area, true);
+    assert_eq!(raw, "*italic*");
+}
+
+#[test]
+fn extract_copy_markdown_partial_strike() {
+    let panel = panel_with_msgs(&["~~struck~~"], 80, 24);
+    let area = Rect::new(0, 0, 80, 24);
+    // Rendered: "maki> struck" — select "str" (cols 6-8)
+    let sel = make_sel(area, (0, MAKI_PREFIX_LEN), (0, MAKI_PREFIX_LEN + 2));
+    let raw = panel.extract_selection_text(&sel, area, true);
+    assert_eq!(raw, "str");
+}
+
+#[test]
+fn extract_copy_markdown_strike_full_row() {
+    let panel = panel_with_msgs(&["~~struck~~"], 80, 24);
+    let area = Rect::new(0, 0, 80, 24);
+    let sel = make_sel(area, (0, MAKI_PREFIX_LEN), (0, 79));
+    let raw = panel.extract_selection_text(&sel, area, true);
+    assert_eq!(raw, "~~struck~~");
+}
+
+#[test]
+fn extract_copy_markdown_partial_inline_code() {
+    let panel = panel_with_msgs(&["`code`"], 80, 24);
+    let area = Rect::new(0, 0, 80, 24);
+    // Rendered: "maki> code" — select "co" (cols 6-7)
+    let sel = make_sel(area, (0, MAKI_PREFIX_LEN), (0, MAKI_PREFIX_LEN + 1));
+    let raw = panel.extract_selection_text(&sel, area, true);
+    assert_eq!(raw, "co");
+}
+
+#[test]
+fn extract_copy_markdown_inline_code_full_row() {
+    let panel = panel_with_msgs(&["`code`"], 80, 24);
+    let area = Rect::new(0, 0, 80, 24);
+    let sel = make_sel(area, (0, MAKI_PREFIX_LEN), (0, 79));
+    let raw = panel.extract_selection_text(&sel, area, true);
+    assert_eq!(raw, "`code`");
+}
+
+#[test]
+fn extract_copy_markdown_mixed_formatting() {
+    let panel = panel_with_msgs(&["**bold** and `code`"], 80, 24);
+    let area = Rect::new(0, 0, 80, 24);
+    // Rendered: "maki> bold and code"
+    // Select "bold and" (cols 6-13) — partial; raw slice includes the `**`
+    // delimiters inside the selected range
+    let sel = make_sel(area, (0, MAKI_PREFIX_LEN), (0, MAKI_PREFIX_LEN + 7));
+    let raw = panel.extract_selection_text(&sel, area, true);
+    assert_eq!(raw, "bold** and");
+}
+
+// ── Headings ──
+
+#[test]
+fn extract_copy_markdown_partial_heading() {
+    let panel = panel_with_msgs(&["# heading"], 80, 24);
+    let area = Rect::new(0, 0, 80, 24);
+    // Rendered: "maki> heading" — select "head" (cols 6-9)
+    let sel = make_sel(area, (0, MAKI_PREFIX_LEN), (0, MAKI_PREFIX_LEN + 3));
+    let raw = panel.extract_selection_text(&sel, area, true);
+    assert_eq!(raw, "head");
+}
+
+#[test]
+fn extract_copy_markdown_heading_full_row() {
+    let panel = panel_with_msgs(&["# heading"], 80, 24);
+    let area = Rect::new(0, 0, 80, 24);
+    let sel = make_sel(area, (0, MAKI_PREFIX_LEN), (0, 79));
+    let raw = panel.extract_selection_text(&sel, area, true);
+    assert_eq!(raw, "# heading");
+}
+
+// ── Code blocks ──
+
+#[test]
+fn extract_copy_markdown_code_block_full() {
+    let panel = panel_with_msgs(&["```\ncode\n```"], 80, 24);
+    let area = Rect::new(0, 0, 80, 24);
+    let heights = panel.segment_heights();
+    let seg_h: u16 = heights.iter().sum();
+    // Select entire segment
+    let sel = make_sel(area, (0, 0), ((seg_h - 1) as u32, 79));
+    let raw = panel.extract_selection_text(&sel, area, true);
+    assert_eq!(raw, "```\ncode\n```");
+}
+
+#[test]
+fn extract_copy_markdown_code_block_info_string() {
+    let panel = panel_with_msgs(&["```rust\ncode\n```"], 80, 24);
+    let area = Rect::new(0, 0, 80, 24);
+    let heights = panel.segment_heights();
+    let seg_h: u16 = heights.iter().sum();
+    // Full segment copy must keep the fence info string.
+    let sel = make_sel(area, (0, 0), ((seg_h - 1) as u32, 79));
+    let raw = panel.extract_selection_text(&sel, area, true);
+    assert_eq!(raw, "```rust\ncode\n```");
+    // Code-line-only copy drops fences and the info string.
+    let sel = make_sel(area, (1, 0), (1, 79));
+    let raw = panel.extract_selection_text(&sel, area, true);
+    assert_eq!(raw, "code");
+}
+
+#[test]
+fn extract_copy_markdown_code_block_partial() {
+    let panel = panel_with_msgs(&["```\nhello world\n```"], 80, 24);
+    let area = Rect::new(0, 0, 80, 24);
+    // Row 1: "│ hello world" — select "ello" (cols 3-6, after "│ ")
+    let sel = make_sel(area, (1, 3), (1, 6));
+    let raw = panel.extract_selection_text(&sel, area, true);
+    assert_eq!(raw, "ello");
+}
+
+#[test]
+fn extract_copy_markdown_code_block_multiline_full() {
+    let panel = panel_with_msgs(&["```\nhello\nworld\n```"], 80, 24);
+    let area = Rect::new(0, 0, 80, 24);
+    let heights = panel.segment_heights();
+    let seg_h: u16 = heights.iter().sum();
+    let sel = make_sel(area, (0, 0), ((seg_h - 1) as u32, 79));
+    let raw = panel.extract_selection_text(&sel, area, true);
+    assert_eq!(raw, "```\nhello\nworld\n```");
+}
+
+#[test]
+fn extract_copy_markdown_code_block_partial_multiline() {
+    let panel = panel_with_msgs(&["```\nhello\nworld\n```"], 80, 24);
+    let area = Rect::new(0, 0, 80, 24);
+    // Row 1: "│ hello" — select the full row (just the code line, no fences)
+    let sel = make_sel(area, (1, 0), (1, 79));
+    let raw = panel.extract_selection_text(&sel, area, true);
+    assert_eq!(raw, "hello");
+}
+
+#[test]
+fn extract_copy_markdown_code_block_wrapped_line() {
+    // 80 x's don't fit in the 79-col text width (80 minus scrollbar):
+    // wraps to "│ "+77 (row 1, cols 2-78) and "│"+3 (row 2, cols 1-3) —
+    // the continuation row has a 1-col bar, content at col 1.
+    let fence = format!("```\n{}\n```", "x".repeat(80));
+    let panel = panel_with_msgs(&[&fence], 80, 24);
+    let area = Rect::new(0, 0, 80, 24);
+    // The first char of the continuation row sits directly after the 1-col
+    // bar: selecting it must not drop it.
+    let sel = make_sel(area, (2, 1), (2, 1));
+    let raw = panel.extract_selection_text(&sel, area, true);
+    assert_eq!(raw, "x");
+    // Last 9 x's of row 1 (cols 70-78) + first 2 x's of row 2: the wrap
+    // point joins with \n and no char is lost.
+    let sel = make_sel(area, (1, 70), (2, 2));
+    let raw = panel.extract_selection_text(&sel, area, true);
+    assert_eq!(raw, format!("{}\n{}", "x".repeat(9), "x".repeat(2)));
+}
+
+// ── List items ──
+
+#[test]
+fn extract_copy_markdown_list_item_partial() {
+    let panel = panel_with_msgs(&["- item"], 80, 24);
+    let area = Rect::new(0, 0, 80, 24);
+    // Rendered: "maki> • item" — "• " at cols 6-7, "item" at cols 8-11
+    // Select "te" (cols 9-10)
+    let tem_start = MAKI_PREFIX_LEN + 2 + 1; // "• " + "i"
+    let tem_end = MAKI_PREFIX_LEN + 2 + 2; // "• " + "it"
+    let sel = make_sel(area, (0, tem_start), (0, tem_end));
+    let raw = panel.extract_selection_text(&sel, area, true);
+    assert_eq!(raw, "te");
+}
+
+#[test]
+fn extract_copy_markdown_list_item_full() {
+    let panel = panel_with_msgs(&["- item"], 80, 24);
+    let area = Rect::new(0, 0, 80, 24);
+    let sel = make_sel(area, (0, MAKI_PREFIX_LEN), (0, 79));
+    let raw = panel.extract_selection_text(&sel, area, true);
+    assert_eq!(raw, "- item");
+}
+
+#[test]
+fn extract_copy_markdown_ordered_list_full() {
+    let panel = panel_with_msgs(&["1. item"], 80, 24);
+    let area = Rect::new(0, 0, 80, 24);
+    let sel = make_sel(area, (0, MAKI_PREFIX_LEN), (0, 79));
+    let raw = panel.extract_selection_text(&sel, area, true);
+    assert_eq!(raw, "1. item");
+}
+
+#[test]
+fn extract_copy_markdown_ordered_list_multidigit_full() {
+    let panel = panel_with_msgs(&["12. item"], 80, 24);
+    let area = Rect::new(0, 0, 80, 24);
+    let sel = make_sel(area, (0, MAKI_PREFIX_LEN), (0, 79));
+    let raw = panel.extract_selection_text(&sel, area, true);
+    assert_eq!(raw, "12. item");
+}
+
+#[test]
+fn extract_copy_markdown_star_marker_list_full() {
+    let panel = panel_with_msgs(&["* item"], 80, 24);
+    let area = Rect::new(0, 0, 80, 24);
+    let sel = make_sel(area, (0, MAKI_PREFIX_LEN), (0, 79));
+    let raw = panel.extract_selection_text(&sel, area, true);
+    assert_eq!(raw, "* item");
+}
+
+#[test]
+fn extract_copy_markdown_nested_list_full() {
+    let panel = panel_with_msgs(&["- outer\n  - inner"], 80, 24);
+    let area = Rect::new(0, 0, 80, 24);
+    // Row 1: "  • inner" — select the full row
+    let sel = make_sel(area, (1, 0), (1, 79));
+    let raw = panel.extract_selection_text(&sel, area, true);
+    assert_eq!(raw, "  - inner");
+}
+
+#[test]
+fn extract_copy_markdown_nested_ordered_list_full() {
+    let panel = panel_with_msgs(&["1. outer\n   2. inner"], 80, 24);
+    let area = Rect::new(0, 0, 80, 24);
+    // Row 1: "   • inner" — select the full row
+    let sel = make_sel(area, (1, 0), (1, 79));
+    let raw = panel.extract_selection_text(&sel, area, true);
+    assert_eq!(raw, "   2. inner");
+}
+
+// ── Horizontal rules ──
+
+#[test]
+fn extract_copy_markdown_hr_full() {
+    let panel = panel_with_msgs(&["before\n\n---\n\nafter"], 80, 24);
+    let area = Rect::new(0, 0, 80, 24);
+    // "before" is row 0, blank row 1, HR row 2, blank row 3, "after" row 4
+    let sel = make_sel(area, (2, 0), (2, 79));
+    let raw = panel.extract_selection_text(&sel, area, true);
+    assert_eq!(raw, "---");
+}
+
+#[test]
+fn extract_copy_markdown_hr_partial() {
+    let panel = panel_with_msgs(&["before\n\n---\n\nafter"], 80, 24);
+    let area = Rect::new(0, 0, 80, 24);
+    // Partial HR selection falls back to rendered ─ chars
+    let sel = make_sel(area, (2, 0), (2, 2));
+    let raw = panel.extract_selection_text(&sel, area, true);
+    assert_eq!(raw, "───");
+}
+
+// ── Tables ──
+
+#[test]
+fn extract_copy_markdown_table_content_full() {
+    let panel = panel_with_msgs(&["| a | b |\n|---|---|\n| Name | Age |"], 80, 24);
+    let area = Rect::new(0, 0, 80, 24);
+    // Row 0: top border, Row 1: separator, Row 2: header "│ a │ b │"
+    // Row 3: separator, Row 4: content "│ Name │ Age │"
+    // Actually the table header is also a content row. Let's select row 2 (header).
+    let sel = make_sel(area, (2, 0), (2, 79));
+    let raw = panel.extract_selection_text(&sel, area, true);
+    assert_eq!(raw, "| a | b |");
+}
+
+#[test]
+fn extract_copy_markdown_table_content_partial() {
+    let panel = panel_with_msgs(&["| a | b |\n|---|---|\n| Name | Age |"], 80, 24);
+    let area = Rect::new(0, 0, 80, 24);
+    // Row 2: "│ a    │ b   │" — select cols 1-3 (" a "). Only the content
+    // char 'a' maps to raw; cell padding is dropped for partial selections.
+    let sel = make_sel(area, (2, 1), (2, 3));
+    let raw = panel.extract_selection_text(&sel, area, true);
+    assert_eq!(raw, "a");
+}
+
+#[test]
+fn extract_copy_markdown_table_border_fallback() {
+    let panel = panel_with_msgs(&["| a | b |\n|---|---|\n| x | y |"], 80, 24);
+    let area = Rect::new(0, 0, 80, 24);
+    // Row 0 is the message prefix; row 1 is the top border (╭───┬───╮).
+    // Border rows are synthetic, so extraction falls back to rendered text.
+    let sel = make_sel(area, (1, 0), (1, 79));
+    let raw = panel.extract_selection_text(&sel, area, true);
+    assert_eq!(raw, "╭───┬───╮");
+}
+
+#[test]
+fn extract_copy_markdown_table_separator_full() {
+    let panel = panel_with_msgs(&["| a | b |\n|---|---|\n| x | y |"], 80, 24);
+    let area = Rect::new(0, 0, 80, 24);
+    // Row 3 is the separator row (├───┼───┤).
+    let sel = make_sel(area, (3, 0), (3, 79));
+    let raw = panel.extract_selection_text(&sel, area, true);
+    assert_eq!(raw, "|---|---|");
+}
+
+#[test]
+fn extract_copy_markdown_table_separator_alignment_full() {
+    let panel = panel_with_msgs(&["| a | b |\n|:---|---:|\n| x | y |"], 80, 24);
+    let area = Rect::new(0, 0, 80, 24);
+    // Row 3 is the separator row with alignment colons.
+    let sel = make_sel(area, (3, 0), (3, 79));
+    let raw = panel.extract_selection_text(&sel, area, true);
+    assert_eq!(raw, "|:---|---:|");
+}
+
+#[test]
+fn extract_copy_markdown_table_multiline() {
+    let panel = panel_with_msgs(&["| a | b |\n|---|---|\n| x | y |"], 80, 24);
+    let area = Rect::new(0, 0, 80, 24);
+    // Rows 1-5: top border, header, separator, content, bottom border.
+    // Borders are synthetic (rendered); content and separator rows are raw.
+    let sel = make_sel(area, (1, 0), (5, 79));
+    let raw = panel.extract_selection_text(&sel, area, true);
+    assert_eq!(raw, "╭───┬───╮\n| a | b |\n|---|---|\n| x | y |\n╰───┴───╯");
+}
+
+#[test]
+fn extract_copy_markdown_table_cell_inline_formatting_full() {
+    let panel = panel_with_msgs(&["| **Name** | Age |\n|------|-----|\n| bob | 3 |"], 80, 24);
+    let area = Rect::new(0, 0, 80, 24);
+    // Row 2 is the header: "│ Name │ Age │" (bold rendered). Full row copy
+    // must include the in-cell ** delimiters.
+    let sel = make_sel(area, (2, 0), (2, 79));
+    let raw = panel.extract_selection_text(&sel, area, true);
+    assert_eq!(raw, "| **Name** | Age |");
+}
+
+#[test]
+fn extract_copy_markdown_table_cross_cell_partial() {
+    let panel = panel_with_msgs(&["| **Name** | Age |\n|------|-----|\n| bob | 3 |"], 80, 24);
+    let area = Rect::new(0, 0, 80, 24);
+    // Row 2: "│ Name │ Age │" — "Name" cols 2-5, border col 7, "Age" cols 9-11.
+    // Select "Name | Ag" (cols 2-10): a partial row spanning both cells copies
+    // the raw slice between the matched chars, including the in-range ** and |.
+    let sel = make_sel(area, (2, 2), (2, 10));
+    let raw = panel.extract_selection_text(&sel, area, true);
+    assert_eq!(raw, "Name** | Ag");
+}
+
+// ── Multi-element ──
+
+#[test]
+fn extract_copy_markdown_multiple_paragraphs() {
+    let panel = panel_with_msgs(&["**bold**\n\nText"], 80, 24);
+    let area = Rect::new(0, 0, 80, 24);
+    let heights = panel.segment_heights();
+    let seg_h: u16 = heights.iter().sum();
+    let sel = make_sel(area, (0, 0), ((seg_h - 1) as u32, 79));
+    let raw = panel.extract_selection_text(&sel, area, true);
+    assert_eq!(raw, "**bold**\n\nText");
+}
+
+#[test]
+fn extract_copy_markdown_paragraph_break_preserved() {
+    let panel = panel_with_msgs(&["first\n\nsecond"], 80, 24);
+    let area = Rect::new(0, 0, 80, 24);
+    let heights = panel.segment_heights();
+    let seg_h: u16 = heights.iter().sum();
+    let sel = make_sel(area, (0, MAKI_PREFIX_LEN), ((seg_h - 1) as u32, 79));
+    let raw = panel.extract_selection_text(&sel, area, true);
+    assert!(
+        raw.contains("\n\n"),
+        "paragraph break should be preserved: {raw:?}"
+    );
+}
+
+// ── Fallback: segments without a source map ──
+
+#[test]
+fn extract_copy_markdown_collapsed_thinking_fallback() {
+    let mut panel = MessagesPanel::new(UiConfig::default(), EventHandle::disconnected_for_test());
+    let mut msg = DisplayMessage::new(DisplayRole::Thinking, "reasoning here".into());
+    msg.thinking_collapsed = true;
+    panel.push(msg);
+    render(&mut panel, 80, 24);
+    let area = Rect::new(0, 0, 80, 24);
+    // Indicator is 2 lines ("thinking> ..." + footer). Select only the header
+    // row (partial segment) → copy_markdown falls back to rendered, never raw.
+    let sel = make_sel(area, (0, 0), (0, 79));
+    let copy_md = panel.extract_selection_text(&sel, area, true);
+    let rendered = panel.extract_selection_text(&sel, area, false);
+    assert!(
+        !copy_md.is_empty(),
+        "header row selection must not be empty"
+    );
+    assert_eq!(
+        copy_md, rendered,
+        "partial collapsed-thinking must fall back to rendered"
+    );
+    assert!(
+        !copy_md.contains("reasoning here"),
+        "raw thinking text must never leak; got: {copy_md:?}"
+    );
+}
+
+#[test]
+fn extract_copy_markdown_expanded_thinking_raw() {
+    let mut panel = MessagesPanel::new(UiConfig::default(), EventHandle::disconnected_for_test());
+    panel.push(DisplayMessage::new(
+        DisplayRole::Thinking,
+        "reasoning here".into(),
+    ));
+    render(&mut panel, 80, 24);
+    let area = Rect::new(0, 0, 80, 24);
+    // Expanded thinking keeps has_source_map=true: a partial selection copies
+    // the raw slice ("reaso"), never the rendered "thinking> reaso".
+    let sel = make_sel(area, (0, 0), (0, 14));
+    let copy_md = panel.extract_selection_text(&sel, area, true);
+    assert_eq!(copy_md, "reaso", "expanded thinking must copy raw source");
+}
+
+#[test]
+fn extract_copy_markdown_tool_segment_fallback() {
+    let mut panel = MessagesPanel::new(UiConfig::default(), EventHandle::disconnected_for_test());
+    panel.tool_start(start("t1", BASH_TOOL_NAME));
+    panel.tool_done(ToolDoneEvent {
+        id: "t1".into(),
+        tool: BASH_TOOL_NAME.into(),
+        output: ToolOutput::Plain("hello tool output".into()),
+        is_error: false,
+        annotation: None,
+        written_path: None,
+    });
+    render(&mut panel, 80, 24);
+    let area = Rect::new(0, 0, 80, 24);
+    // Collapsed tool segment. Select a partial width of its row so the segment
+    // is not fully selected → copy_markdown falls back to rendered, never raw.
+    let sel = make_sel(area, (0, 0), (0, 7));
+    let copy_md = panel.extract_selection_text(&sel, area, true);
+    let rendered = panel.extract_selection_text(&sel, area, false);
+    assert!(
+        !copy_md.is_empty(),
+        "tool header selection must not be empty"
+    );
+    assert_eq!(
+        copy_md, rendered,
+        "partial tool segment must fall back to rendered"
+    );
+    assert!(
+        !copy_md.contains("hello tool output"),
+        "tool output must never leak via copy_markdown; got: {copy_md:?}"
+    );
+}
+
+#[test]
+fn extract_copy_markdown_plan_message_fallback() {
+    let mut panel = MessagesPanel::new(UiConfig::default(), EventHandle::disconnected_for_test());
+    let mut msg = DisplayMessage::new(DisplayRole::Assistant, "plan body text".into());
+    msg.plan_path = Some("/tmp/plan.md".into());
+    panel.push(msg);
+    render(&mut panel, 80, 24);
+    let area = Rect::new(0, 0, 80, 24);
+    // Plan messages have has_source_map=false: the text row (row 1, between
+    // the rules) must fall back to rendered.
+    let sel = make_sel(area, (1, 0), (1, 79));
+    let copy_md = panel.extract_selection_text(&sel, area, true);
+    let rendered = panel.extract_selection_text(&sel, area, false);
+    assert!(
+        !copy_md.is_empty(),
+        "plan text row selection must not be empty"
+    );
+    assert_eq!(copy_md, rendered, "plan message must fall back to rendered");
+    assert_eq!(copy_md, "plan body text");
+}
+
+// ── Multi-element ──
 
 #[test]
 fn extract_skips_out_of_range_segments() {

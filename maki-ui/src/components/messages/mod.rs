@@ -1191,6 +1191,7 @@ impl MessagesPanel {
         if let Some(seg) = self.cache.get_mut(seg_idx) {
             seg.set_lines(lines);
             seg.search_text = search_text;
+            seg.has_source_map = !collapsed;
         }
     }
 
@@ -1350,13 +1351,17 @@ impl MessagesPanel {
                 let prefix_width = prefix.width() as u16;
                 let search_text = format!("{prefix}{}", msg.text);
                 self.cache.push_spacer_if_needed();
-                self.cache.push(Segment::with_lines(
+                let mut seg = Segment::with_lines(
                     lines,
                     search_text,
                     Some(msg.text.clone()),
                     prefix_width,
                     Some(i),
-                ));
+                );
+                if msg.plan_path.is_none() {
+                    seg.has_source_map = true;
+                }
+                self.cache.push(seg);
             }
         }
         self.cache.mark_built(self.messages.len());
