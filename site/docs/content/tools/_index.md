@@ -84,11 +84,11 @@ Edit lines by number. Replaces lines from `start` to `end` (inclusive) with `new
 
 ### `insert_lines` <span class="badge badge-optin">opt-in</span> {#insert_lines}
 
-Insert lines before a given line number. Lines at `line` and below shift down. Existing lines are preserved. Do not use with the batch tool.
+Insert lines after a given line number. Existing lines at `line`+1 and below shift down. Use 0 to insert at the top, or the last line number to append to the end. Put only the new lines in `new_string`, never lines already in the file. Do not use with the batch tool.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `line` | integer | yes | Line number to insert before (1-indexed). Use 1 to insert at the top. |
+| `line` | integer | yes | Line number to insert after (1-indexed). Use 0 to insert at the top, or the last line number to append to the end. |
 | `new_string` | string | yes | Text to insert |
 | `path` | string | yes | Absolute path to the file |
 
