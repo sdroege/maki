@@ -293,6 +293,9 @@ local function command_scope(node, source)
   return kind == "command" and unwrap_prefixes(text) or text
 end
 
+-- Redirects attach to the last command of the chain, the one bash would
+-- actually apply it to. A bodiless `> log` has no such command and becomes a
+-- scope of its own instead of vanishing: it still truncates the file.
 local function attach_redirects(out, redirects)
   if #redirects == 0 then
     return
@@ -305,14 +308,9 @@ local function attach_redirects(out, redirects)
   end
 end
 
--- The commands a block runs, through nested pipelines, lists, redirects and
--- blocks. Non-command words (loop variables, `case` patterns) yield nothing.
-local function inner_commands(node, source)
-  if ATOMIC_COMMAND_TYPES[node:type()] then
-    local scope = command_scope(node, source)
-    return scope and { scope } or {}
-  end
-
+-- The shared child walk: named, non-comment children yield their scopes
+-- through {recurse}, redirects are handled by attach_redirects.
+local function walk_children(node, source, recurse)
   local out, redirects = {}, {}
   for child in node:iter_children() do
     local kind = child:type()
@@ -320,7 +318,7 @@ local function inner_commands(node, source)
       if REDIRECT_TYPES[kind] then
         redirects[#redirects + 1] = node_text(child, source)
       else
-        for _, cmd in ipairs(inner_commands(child, source)) do
+        for _, cmd in ipairs(recurse(child, source)) do
           out[#out + 1] = cmd
         end
       end
@@ -330,30 +328,22 @@ local function inner_commands(node, source)
   return out
 end
 
+-- The commands a block runs, through nested pipelines, lists, redirects and
+-- blocks. Non-command words (loop variables, `case` patterns) yield nothing.
+local function inner_commands(node, source)
+  if ATOMIC_COMMAND_TYPES[node:type()] then
+    local scope = command_scope(node, source)
+    return scope and { scope } or {}
+  end
+  return walk_children(node, source, inner_commands)
+end
+
 -- Anything we don't walk through becomes a scope of its own text, so an
 -- unknown node reaches the user instead of getting dropped. Blocks add their
 -- inner commands as scopes too.
 local function collect_commands(node, source)
   if WALK_THROUGH_TYPES[node:type()] then
-    local out, redirects = {}, {}
-    for child in node:iter_children() do
-      local kind = child:type()
-      if child:named() and kind ~= "comment" then
-        if REDIRECT_TYPES[kind] then
-          redirects[#redirects + 1] = node_text(child, source)
-        else
-          for _, cmd in ipairs(collect_commands(child, source)) do
-            out[#out + 1] = cmd
-          end
-        end
-      end
-    end
-
-    -- The redirect belongs to the last command of the chain, the one bash
-    -- would actually apply it to. A bodiless `> log` has no such command and
-    -- still truncates the file, so it becomes a scope of its own.
-    attach_redirects(out, redirects)
-    return out
+    return walk_children(node, source, collect_commands)
   end
 
   local scope = command_scope(node, source)
