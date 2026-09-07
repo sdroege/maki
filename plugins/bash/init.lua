@@ -210,16 +210,46 @@ local WALK_THROUGH_TYPES = {
   redirected_statement = true,
 }
 
+-- Block forms: kept as one scope, plus their inner commands as scopes, so a
+-- deny rule reaches inside and an allow on one can't claim the block.
+local BLOCK_TYPES = {
+  if_statement = true,
+  for_statement = true,
+  while_statement = true,
+  c_style_for_statement = true,
+  case_statement = true,
+  compound_statement = true,
+}
+
+-- The smallest command nodes a rule can be about.
+local ATOMIC_COMMAND_TYPES = {
+  command = true,
+  negated_command = true,
+  test_command = true,
+  declaration_command = true,
+  unset_command = true,
+}
+
 local function node_text(node, source)
   return maki.treesitter.get_node_text(node, source):match("^%s*(.-)%s*$")
 end
 
--- Anything we don't walk through becomes one scope, its own text. That covers
--- plain commands and the block forms (`if`, `while`, subshells) we deliberately
--- keep whole, plus any node type we never thought of, which is what we want:
--- an unknown node has to end up in front of the user, not get dropped.
-local function collect_commands(node, source)
-  if not WALK_THROUGH_TYPES[node:type()] then
+local function attach_redirects(out, redirects)
+  if #redirects == 0 then
+    return
+  end
+  local text = table.concat(redirects, " ")
+  if #out > 0 then
+    out[#out] = out[#out] .. " " .. text
+  else
+    out[1] = text
+  end
+end
+
+-- The commands a block runs, through nested pipelines, lists, redirects and
+-- blocks. Non-command words (loop variables, `case` patterns) yield nothing.
+local function inner_commands(node, source)
+  if ATOMIC_COMMAND_TYPES[node:type()] then
     local text = node_text(node, source)
     return text ~= "" and { text } or {}
   end
@@ -231,22 +261,54 @@ local function collect_commands(node, source)
       if REDIRECT_TYPES[kind] then
         redirects[#redirects + 1] = node_text(child, source)
       else
-        for _, cmd in ipairs(collect_commands(child, source)) do
+        for _, cmd in ipairs(inner_commands(child, source)) do
           out[#out + 1] = cmd
         end
       end
     end
   end
+  attach_redirects(out, redirects)
+  return out
+end
 
-  -- The redirect belongs to the last command of the chain, the one bash would
-  -- actually apply it to. A bodiless `> log` has no such command and still
-  -- truncates the file, so it becomes a scope of its own instead of vanishing.
-  if #redirects > 0 then
-    local text = table.concat(redirects, " ")
-    if #out > 0 then
-      out[#out] = out[#out] .. " " .. text
-    else
-      out[1] = text
+-- Anything we don't walk through becomes a scope of its own text, so an
+-- unknown node reaches the user instead of getting dropped. Blocks add their
+-- inner commands as scopes too.
+local function collect_commands(node, source)
+  if WALK_THROUGH_TYPES[node:type()] then
+    local out, redirects = {}, {}
+    for child in node:iter_children() do
+      local kind = child:type()
+      if child:named() and kind ~= "comment" then
+        if REDIRECT_TYPES[kind] then
+          redirects[#redirects + 1] = node_text(child, source)
+        else
+          for _, cmd in ipairs(collect_commands(child, source)) do
+            out[#out + 1] = cmd
+          end
+        end
+      end
+    end
+
+    -- The redirect belongs to the last command of the chain, the one bash
+    -- would actually apply it to. A bodiless `> log` has no such command and
+    -- still truncates the file, so it becomes a scope of its own.
+    attach_redirects(out, redirects)
+    return out
+  end
+
+  local text = node_text(node, source)
+  if text == "" then
+    return {}
+  end
+  local out = { text }
+  if BLOCK_TYPES[node:type()] then
+    local seen = {}
+    for _, inner in ipairs(inner_commands(node, source)) do
+      if not seen[inner] then
+        seen[inner] = true
+        out[#out + 1] = inner
+      end
     end
   end
   return out

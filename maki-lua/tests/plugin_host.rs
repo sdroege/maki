@@ -5250,8 +5250,8 @@ fn bash_permission_scopes_never_falls_back_to_json(command: &str) {
 )]
 #[test_case::test_case(
     "if [ -f x ]; then rm x; fi",
-    &["if [ -f x ]; then rm x; fi"]
-    ; "block_stays_one_scope"
+    &["if [ -f x ]; then rm x; fi", "[ -f x ]", "rm x"]
+    ; "block_scope_kept_and_inner_commands_added"
 )]
 #[test_case::test_case(
     "cd /tmp && > log",
@@ -5259,6 +5259,60 @@ fn bash_permission_scopes_never_falls_back_to_json(command: &str) {
     ; "bodiless_redirect_is_its_own_scope"
 )]
 fn bash_permission_scopes_split_per_command(command: &str, expected: &[&str]) {
+    let (reg, _host) = builtins_host();
+
+    let input = serde_json::json!({ "command": command });
+    let entry = reg.get("bash").expect("bash registered");
+    let inv = entry.tool.parse(&input).expect("parse failed");
+    let scopes = smol::block_on(inv.permission_scopes()).expect("permission_scopes returned None");
+
+    assert!(!scopes.force_prompt, "command: {command}");
+    assert_eq!(scopes.scopes, expected, "command: {command}");
+}
+
+/// A block stays one scope, but the commands it runs come along as additional
+/// scopes: deny reaches inside, and an allow on one can't claim the block.
+#[test_case::test_case(
+    "for f in *.rs; do wc -l $f; done",
+    &["for f in *.rs; do wc -l $f; done", "wc -l $f"]
+    ; "for_loop_body"
+)]
+#[test_case::test_case(
+    "while true; do sudo x; done",
+    &["while true; do sudo x; done", "true", "sudo x"]
+    ; "while_loop_head_and_body"
+)]
+#[test_case::test_case(
+    "until cargo test; do sleep 1; done",
+    &["until cargo test; do sleep 1; done", "cargo test", "sleep 1"]
+    ; "until_loop_head_and_body"
+)]
+#[test_case::test_case(
+    "case $x in a) rm -rf / ;; esac",
+    &["case $x in a) rm -rf / ;; esac", "rm -rf /"]
+    ; "case_body"
+)]
+#[test_case::test_case(
+    "{ rm -rf ~; }",
+    &["{ rm -rf ~; }", "rm -rf ~"]
+    ; "brace_group_body"
+)]
+#[test_case::test_case(
+    "for ((i=0;i<5;i++)); do rm $i; done",
+    &["for ((i=0;i<5;i++)); do rm $i; done", "rm $i"]
+    ; "c_style_for_body"
+)]
+#[test_case::test_case(
+    "if a; then if b; then c; fi; fi",
+    &["if a; then if b; then c; fi; fi", "a", "b", "c"]
+    ; "nested_blocks"
+)]
+#[test_case::test_case(
+    "while true; do echo hi && sudo x; done",
+    &["while true; do echo hi && sudo x; done", "true", "echo hi", "sudo x"]
+    ; "while_list_body"
+)]
+fn bash_block_scopes_include_inner_commands(command: &str, expected: &[&str]) {
     let (reg, _host) = builtins_host();
 
     let input = serde_json::json!({ "command": command });
