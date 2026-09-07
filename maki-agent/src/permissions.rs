@@ -770,7 +770,14 @@ pub fn scope_matches(pattern: &str, value: &str) -> bool {
         return true;
     }
     if let Some(prefix) = pattern.strip_suffix(" *") {
-        return value == prefix || value.starts_with(&format!("{prefix} "));
+        // The separator between command and arguments can be any whitespace,
+        // not just a space: `rm *` must cover `rm\t-rf /` too.
+        if value == prefix {
+            return true;
+        }
+        return value
+            .strip_prefix(prefix)
+            .is_some_and(|rest| rest.starts_with(char::is_whitespace));
     }
     if let Some(prefix) = pattern.strip_suffix('*') {
         return value.starts_with(prefix);
@@ -941,6 +948,9 @@ mod tests {
     #[test_case("pwd *", "pwd" => true ; "space_star_matches_bare_command")]
     #[test_case("pwd *", "pwd -L" => true ; "space_star_matches_with_args")]
     #[test_case("pwd *", "pwdx" => false ; "space_star_no_partial_token")]
+    #[test_case("rm *", "rm\t-rf /" => true ; "space_star_tab_separator")]
+    #[test_case("rm *", "rm\n-rf /" => true ; "space_star_newline_separator")]
+    #[test_case("rm *", "rm\r-rf /" => true ; "space_star_crlf_separator")]
     #[test_case("src/**", "src/main.rs" => true ; "glob")]
     #[test_case("src/**", "src/deep/nested/file.rs" => true ; "glob_deep_nested")]
     #[test_case("src/**", "src" => true ; "glob_exact_prefix")]
