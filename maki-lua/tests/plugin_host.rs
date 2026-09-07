@@ -5324,6 +5324,31 @@ fn bash_block_scopes_include_inner_commands(command: &str, expected: &[&str]) {
     assert_eq!(scopes.scopes, expected, "command: {command}");
 }
 
+/// `time`/`nohup`/`env`/`exec`/`stdbuf` wrap a command without changing what
+/// runs, and `!` only inverts the exit status: scope the wrapped command.
+#[test_case::test_case("time cargo test", &["cargo test"] ; "time")]
+#[test_case::test_case("nohup cargo test", &["cargo test"] ; "nohup")]
+#[test_case::test_case("env FOO=1 cargo test", &["FOO=1 cargo test"] ; "env_with_assignment")]
+#[test_case::test_case("exec sudo x", &["sudo x"] ; "exec")]
+#[test_case::test_case("stdbuf -o0 cargo test", &["cargo test"] ; "stdbuf_flags")]
+#[test_case::test_case("stdbuf cargo test", &["cargo test"] ; "stdbuf_bare")]
+#[test_case::test_case("! rm -rf /", &["rm -rf /"] ; "negated")]
+#[test_case::test_case("! time rm -rf /", &["rm -rf /"] ; "negated_then_prefix")]
+#[test_case::test_case("time nohup cargo test", &["cargo test"] ; "chained_prefixes")]
+#[test_case::test_case("rm time", &["rm time"] ; "prefix_word_as_argument")]
+#[test_case::test_case("time", &["time"] ; "bare_prefix_word")]
+fn bash_scopes_unwrap_prefix_commands(command: &str, expected: &[&str]) {
+    let (reg, _host) = builtins_host();
+
+    let input = serde_json::json!({ "command": command });
+    let entry = reg.get("bash").expect("bash registered");
+    let inv = entry.tool.parse(&input).expect("parse failed");
+    let scopes = smol::block_on(inv.permission_scopes()).expect("permission_scopes returned None");
+
+    assert!(!scopes.force_prompt, "command: {command}");
+    assert_eq!(scopes.scopes, expected, "command: {command}");
+}
+
 fn exec_tool_with_perms(
     perms: maki_lua::PluginPermissions,
     src: &str,

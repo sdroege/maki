@@ -234,6 +234,65 @@ local function node_text(node, source)
   return maki.treesitter.get_node_text(node, source):match("^%s*(.-)%s*$")
 end
 
+-- `time`/`nohup`/`env`/`exec`/`stdbuf` wrap a command, so scope what runs.
+-- Tried one at a time: the LuaU runtime we ship never matches `|` alternation.
+local PREFIX_WORDS = { "time", "nohup", "env", "exec" }
+
+-- stdbuf's own flags (`-o0`, ...) are not part of the command it runs.
+local function strip_flags(text)
+  while true do
+    local rest = text:match("^%-%S+%s+(.+)$")
+    if rest then
+      text = rest
+    else
+      return text
+    end
+  end
+end
+
+local function unwrap_prefixes(text)
+  while true do
+    local rest
+    for _, p in ipairs(PREFIX_WORDS) do
+      rest = text:match("^" .. p .. "%s+(.+)$")
+      if rest then
+        break
+      end
+    end
+    if rest then
+      text = rest
+    else
+      local body = text:match("^stdbuf%s+(.+)$")
+      if body then
+        text = strip_flags(body)
+      else
+        return text
+      end
+    end
+  end
+end
+
+-- The scope for a command leaf. `!` only inverts the exit status, so scope
+-- the wrapped command, not the negation.
+local function command_scope(node, source)
+  local kind = node:type()
+  if kind == "negated_command" then
+    for child in node:iter_children() do
+      if child:named() and child:type() == "command" then
+        local inner = node_text(child, source)
+        if inner ~= "" then
+          return unwrap_prefixes(inner)
+        end
+      end
+    end
+  end
+  local text = node_text(node, source)
+  if text == "" then
+    return nil
+  end
+  return kind == "command" and unwrap_prefixes(text) or text
+end
+
 local function attach_redirects(out, redirects)
   if #redirects == 0 then
     return
@@ -250,8 +309,8 @@ end
 -- blocks. Non-command words (loop variables, `case` patterns) yield nothing.
 local function inner_commands(node, source)
   if ATOMIC_COMMAND_TYPES[node:type()] then
-    local text = node_text(node, source)
-    return text ~= "" and { text } or {}
+    local scope = command_scope(node, source)
+    return scope and { scope } or {}
   end
 
   local out, redirects = {}, {}
@@ -297,11 +356,11 @@ local function collect_commands(node, source)
     return out
   end
 
-  local text = node_text(node, source)
-  if text == "" then
+  local scope = command_scope(node, source)
+  if scope == nil then
     return {}
   end
-  local out = { text }
+  local out = { scope }
   if BLOCK_TYPES[node:type()] then
     local seen = {}
     for _, inner in ipairs(inner_commands(node, source)) do
