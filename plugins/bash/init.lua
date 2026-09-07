@@ -293,6 +293,101 @@ local function command_scope(node, source)
   return kind == "command" and unwrap_prefixes(text) or text
 end
 
+-- tree-sitter's `!` only negates a simple command; before a compound statement
+-- it mis-parses into garbage scopes. `!` only inverts the exit status, so drop
+-- any `!` that negates a compound statement, wherever it begins a pipeline
+-- (not just the leading one). A `!` before a simple command is left alone (it
+-- parses as a `negated_command`), and so is a `!` inside quotes or one that
+-- does not start a pipeline (e.g. an argument like `echo ! if`).
+local COMPOUND_KEYWORDS = { "{", "if", "while", "until", "for", "case" }
+local PIPELINE_START_KEYWORDS = { "then", "do", "else", "elif" }
+
+local function at_pipeline_start(command, i)
+  local j = i - 1
+  while j >= 1 and command:sub(j, j):match("%s") do
+    j = j - 1
+  end
+  if j < 1 then
+    return true
+  end
+  local c = command:sub(j, j)
+  if c == ";" or c == "|" or c == "&" or c == "(" or c == "{" then
+    return true
+  end
+  for _, kw in ipairs(PIPELINE_START_KEYWORDS) do
+    local start = j - #kw + 1
+    if start >= 1 and command:sub(start, j) == kw then
+      local before = start > 1 and command:sub(start - 1, start - 1) or ""
+      if before == "" or before:match("%s") then
+        return true
+      end
+    end
+  end
+  return false
+end
+
+local function strip_compound_negations(command)
+  local out = {}
+  local n = #command
+  local i = 1
+  while i <= n do
+    local c = command:sub(i, i)
+    if c == "'" then
+      out[#out + 1] = c
+      i = i + 1
+      while i <= n and command:sub(i, i) ~= "'" do
+        out[#out + 1] = command:sub(i, i)
+        i = i + 1
+      end
+      if i <= n then
+        out[#out + 1] = command:sub(i, i)
+        i = i + 1
+      end
+    elseif c == '"' then
+      out[#out + 1] = c
+      i = i + 1
+      while i <= n do
+        local q = command:sub(i, i)
+        out[#out + 1] = q
+        if q == "\\" and i < n then
+          out[#out + 1] = command:sub(i + 1, i + 1)
+          i = i + 2
+        else
+          i = i + 1
+          if q == '"' then
+            break
+          end
+        end
+      end
+    elseif c == "!" then
+      local rest = command:sub(i + 1)
+      local ws, after_ws = rest:match("^(%s+)(.*)$")
+      local negates = false
+      if ws and at_pipeline_start(command, i) then
+        for _, kw in ipairs(COMPOUND_KEYWORDS) do
+          if after_ws:sub(1, #kw) == kw then
+            local after = after_ws:sub(#kw + 1, #kw + 1)
+            if after == "" or after:match("^%s$") or after == ";" or after == "(" then
+              negates = true
+              break
+            end
+          end
+        end
+      end
+      if negates then
+        i = i + 1 + #ws
+      else
+        out[#out + 1] = c
+        i = i + 1
+      end
+    else
+      out[#out + 1] = c
+      i = i + 1
+    end
+  end
+  return table.concat(out)
+end
+
 -- Redirects attach to the last command of the chain, the one bash would
 -- actually apply it to. A bodiless `> log` has no such command and becomes a
 -- scope of its own instead of vanishing: it still truncates the file.
@@ -407,7 +502,11 @@ maki.api.register_tool({
       return nil
     end
 
-    local parser = maki.treesitter.get_parser(command, "bash")
+    -- A `!` mis-parses the compound statement it negates, so drop such
+    -- negations before parsing: they change nothing about what runs.
+    local parse = strip_compound_negations(command)
+
+    local parser = maki.treesitter.get_parser(parse, "bash")
     if not parser then
       return { scopes = { command }, force_prompt = true }
     end
@@ -417,7 +516,7 @@ maki.api.register_tool({
       return { scopes = { command }, force_prompt = true }
     end
 
-    local segments = collect_commands(root, command)
+    local segments = collect_commands(root, parse)
     if #segments == 0 then
       segments = { command }
     end

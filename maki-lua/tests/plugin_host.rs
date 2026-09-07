@@ -5349,6 +5349,94 @@ fn bash_scopes_unwrap_prefix_commands(command: &str, expected: &[&str]) {
     assert_eq!(scopes.scopes, expected, "command: {command}");
 }
 
+/// A leading `!` before a compound statement mis-parses in tree-sitter, so it
+/// is stripped before parsing: the negation changes nothing about what runs.
+#[test_case::test_case("! { rm x; }", &["{ rm x; }", "rm x"] ; "negated_brace_group")]
+#[test_case::test_case(
+    "! if a; then rm x; fi",
+    &["if a; then rm x; fi", "a", "rm x"]
+    ; "negated_if"
+)]
+#[test_case::test_case(
+    "! while true; do sudo x; done",
+    &["while true; do sudo x; done", "true", "sudo x"]
+    ; "negated_loop"
+)]
+#[test_case::test_case("! ls | grep x", &["ls", "grep x"] ; "negated_pipeline")]
+fn bash_scopes_strip_leading_negation(command: &str, expected: &[&str]) {
+    let (reg, _host) = builtins_host();
+
+    let input = serde_json::json!({ "command": command });
+    let entry = reg.get("bash").expect("bash registered");
+    let inv = entry.tool.parse(&input).expect("parse failed");
+    let scopes = smol::block_on(inv.permission_scopes()).expect("permission_scopes returned None");
+
+    assert!(!scopes.force_prompt, "command: {command}");
+    assert_eq!(scopes.scopes, expected, "command: {command}");
+}
+
+/// A `!` that is not the command's leading token only wraps a simple command
+/// (a `negated_command`), which `command_scope` already unwraps, so nested
+/// negation of a simple command scopes the wrapped command as usual.
+#[test_case::test_case(
+    "if a; then ! rm x; fi",
+    &["if a; then ! rm x; fi", "a", "rm x"]
+    ; "negated_simple_in_if"
+)]
+fn bash_scopes_nested_negation(command: &str, expected: &[&str]) {
+    let (reg, _host) = builtins_host();
+
+    let input = serde_json::json!({ "command": command });
+    let entry = reg.get("bash").expect("bash registered");
+    let inv = entry.tool.parse(&input).expect("parse failed");
+    let scopes = smol::block_on(inv.permission_scopes()).expect("permission_scopes returned None");
+
+    assert!(!scopes.force_prompt, "command: {command}");
+    assert_eq!(scopes.scopes, expected, "command: {command}");
+}
+
+/// A `!` before a compound statement mis-parses anywhere it begins a pipeline,
+/// so it is stripped before parsing (as it is when leading): the negation
+/// changes nothing about what runs. The scopes reflect the stripped command.
+#[test_case::test_case(
+    "if a; then ! { rm x; }; fi",
+    &["if a; then { rm x; }; fi", "a", "rm x"]
+    ; "negated_compound_in_if"
+)]
+#[test_case::test_case(
+    "a && ! { rm x; }",
+    &["a", "{ rm x; }", "rm x"]
+    ; "negated_compound_in_list"
+)]
+fn bash_scopes_strip_nested_compound_negation(command: &str, expected: &[&str]) {
+    let (reg, _host) = builtins_host();
+
+    let input = serde_json::json!({ "command": command });
+    let entry = reg.get("bash").expect("bash registered");
+    let inv = entry.tool.parse(&input).expect("parse failed");
+    let scopes = smol::block_on(inv.permission_scopes()).expect("permission_scopes returned None");
+
+    assert!(!scopes.force_prompt, "command: {command}");
+    assert_eq!(scopes.scopes, expected, "command: {command}");
+}
+
+/// A `!` that does not negate a compound statement — inside quotes, or an
+/// argument rather than a pipeline head — is left in place: stripping it would
+/// rewrite the command's scope.
+#[test_case::test_case("echo \"a; ! if b\"", &["echo \"a; ! if b\""] ; "in_quotes")]
+#[test_case::test_case("echo ! if", &["echo ! if"] ; "as_argument")]
+fn bash_scopes_leaves_non_negating_bang(command: &str, expected: &[&str]) {
+    let (reg, _host) = builtins_host();
+
+    let input = serde_json::json!({ "command": command });
+    let entry = reg.get("bash").expect("bash registered");
+    let inv = entry.tool.parse(&input).expect("parse failed");
+    let scopes = smol::block_on(inv.permission_scopes()).expect("permission_scopes returned None");
+
+    assert!(!scopes.force_prompt, "command: {command}");
+    assert_eq!(scopes.scopes, expected, "command: {command}");
+}
+
 fn exec_tool_with_perms(
     perms: maki_lua::PluginPermissions,
     src: &str,
