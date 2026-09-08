@@ -292,7 +292,7 @@ async fn named_or_focused(
 /// disk. The UI answers for its tabs. A headless driver publishes its
 /// session's settings next to the transcript, so a session it has not saved
 /// yet reads too.
-async fn transcript(
+async fn session_export(
     lua: &Lua,
     tx: Option<&flume::Sender<UiAction>>,
     id: MakiId,
@@ -399,8 +399,8 @@ async fn export(
         None => None,
     };
     let session = try_pair!(named_or_focused(&lua, tx.as_ref(), id).await);
-    let transcript = try_pair!(transcript(&lua, tx.as_ref(), session).await);
-    Ok((Some(transcript_table(&lua, transcript).await?), None))
+    let session_export = try_pair!(session_export(&lua, tx.as_ref(), session).await);
+    Ok((Some(transcript_table(&lua, session_export).await?), None))
 }
 
 /// Reads a session's transcript, oldest first: everything the model has
@@ -464,7 +464,7 @@ async fn messages(
     let session = try_pair!(named_or_focused(&lua, tx.as_ref(), id).await);
     let history = match live_history(session) {
         Some(history) => history,
-        None => try_pair!(transcript(&lua, tx.as_ref(), session).await).messages,
+        None => try_pair!(session_export(&lua, tx.as_ref(), session).await).messages,
     };
     let skip = last.map_or(0, |n| history.len().saturating_sub(n));
     Ok((Some(messages_table(&lua, &history[skip..]).await?), None))
@@ -479,6 +479,51 @@ async fn messages(
 #[lua_fn]
 async fn current(lua: Lua, #[ctx] tx: Option<flume::Sender<UiAction>>) -> LuaResult<Pair<String>> {
     Ok(pair(focused_session(&lua, tx.as_ref()).await))
+}
+
+/// Reads a session's transcript, window by window. The current window is
+/// `windows[1]` and holds the live conversation; with `archives = true` the
+/// archived pre-compaction windows follow, oldest first, labeled with the
+/// sequence numbers their filenames carry (stable while pruning drops the
+/// oldest and leaves gaps). A live session answers from memory, so an
+/// in-flight turn appears only once it completes: a batch still running is
+/// cut rather than closed with placeholder results.
+///
+/// Each window is:
+/// ```text
+/// {
+///   id = "current" | "<seq>",
+///   created_at,           -- when the window began: session start, or the
+///                          -- compaction that opened it (approximated)
+///   messages = { {role, content, ...}, ... },  -- content-block format,
+///                                               -- tool results included
+///   subagents = { { nr, name, messages }, ... }, -- transcripts that belong
+///                                                -- to this window, ordered
+///                                                -- by spawn; nr is the
+///                                                -- stable 1-based spawn
+///                                                -- position, for numbering
+///                                                -- a transcript's items
+/// }
+/// ```
+///
+/// @param opts table? Options:
+///   session (string) id of a live or stored session; defaults to focused.
+///   archives (boolean) include the session's archived windows (default false).
+/// @return (table|nil, string|nil) `{ id, windows }`, or nil and an error.
+/// @example
+/// local t, err = maki.session.transcript({ archives = true })
+/// local current = t.windows[1]
+#[lua_fn(guard = SessionRead)]
+async fn transcript(
+    lua: Lua,
+    #[ctx] tx: Option<flume::Sender<UiAction>>,
+    opts: Option<Table>,
+) -> LuaResult<Pair<Value>> {
+    let (id, archives) = match opts {
+        Some(t) => (t.opt("session")?, t.opt_bool("archives").unwrap_or(false)),
+        None => (None, false),
+    };
+    roundtrip(lua, tx, SessionRequest::Messages { id, archives }).await
 }
 
 /// Switches the UI to the session with {id}.
@@ -827,9 +872,9 @@ lua_table! {
         grants: PluginPermissions,
     ),
     DOCS [
-        list(tx), live(tx), current(tx), read(tx), export(perms, tx), messages(perms, tx), focus(tx),
-        delete(perms, tx), new(perms, tx, grants), prompt(perms, tx), notify(perms, grants),
-        set_mode(perms, tx), set_title(perms, tx),
+        list(tx), live(tx), current(tx), read(tx), export(perms, tx), messages(perms, tx),
+        transcript(perms, tx), focus(tx), delete(perms, tx), new(perms, tx, grants),
+        prompt(perms, tx), notify(perms, grants), set_mode(perms, tx), set_title(perms, tx),
     ]
 }
 
@@ -979,6 +1024,37 @@ mod tests {
         checker.join().unwrap();
         assert_eq!(err, None);
         assert!(val);
+    }
+
+    #[test_case(r#"return session.transcript({ session = 'abc', archives = true })"#, Some("abc"), true ; "explicit_session_and_archives")]
+    #[test_case("return session.transcript()", None, false ; "defaults_to_focused_without_archives")]
+    #[tokio::test]
+    async fn transcript_forwards_session_id_and_archives_flag(
+        code: &str,
+        expected_id: Option<&str>,
+        expected_archives: bool,
+    ) {
+        let (tx, rx) = flume::unbounded::<UiAction>();
+        let lua = lua_with_session(Some(tx));
+        let expected_id = expected_id.map(str::to_owned);
+        let checker = std::thread::spawn(move || {
+            let Ok(UiAction::Session {
+                req: SessionRequest::Messages { id, archives },
+                reply_tx,
+            }) = rx.recv()
+            else {
+                panic!("expected messages request");
+            };
+            assert_eq!(id, expected_id);
+            assert_eq!(archives, expected_archives);
+            reply_tx
+                .send(Ok(json!({ "id": "abc", "windows": [] })))
+                .unwrap();
+        });
+        let (val, err): (Table, Option<String>) = lua.load(code).eval_async().await.unwrap();
+        checker.join().unwrap();
+        assert_eq!(err, None);
+        assert_eq!(val.get::<String>("id").unwrap(), "abc");
     }
 
     #[test]

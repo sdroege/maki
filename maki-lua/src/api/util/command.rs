@@ -482,6 +482,13 @@ pub enum SessionRequest {
     Read {
         id: Option<String>,
     },
+    /// `maki.session.messages`: the UI answers from the live in-memory
+    /// session, or loads a stored-only one from disk. No headless fallback:
+    /// without a UI the roundtrip answers "no interactive UI attached".
+    Messages {
+        id: Option<String>,
+        archives: bool,
+    },
     /// {transcript} is parsed but not validated yet. The UI lays it over the
     /// focused tab's blank session, the one place that decides a new
     /// session's defaults, and answers what is wrong with it. Without
