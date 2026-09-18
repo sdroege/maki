@@ -51,7 +51,6 @@ use crate::components::usage_modal::{UsageFetchState, UsageModal};
 use crate::components::{
     Action, DisplayMessage, DisplayRole, ExitRequest, Overlay, RetryInfo, Status, is_ctrl,
 };
-use crate::image;
 use crate::markdown::TRUNCATION_PREFIX;
 use crate::repaint::{Cadence, Dirty, Watch};
 use crate::selection::{SelectionState, SelectionZone, ZoneRegistry};
@@ -380,6 +379,7 @@ pub struct App {
     pub(crate) shared_history: Option<SharedMessages>,
     pub(crate) btw_system: Option<Arc<ArcSwap<String>>>,
     pub(crate) image_paste_rx: Vec<flume::Receiver<Result<ImageSource, String>>>,
+    pub(crate) primary_paste_rx: Vec<flume::Receiver<Option<String>>>,
     storage_writer: Arc<StorageWriter>,
     last_sent: Option<Sent>,
     pub(crate) shell: shell::ShellState,
@@ -495,6 +495,7 @@ impl App {
             shared_history: None,
             btw_system: None,
             image_paste_rx: vec![],
+            primary_paste_rx: vec![],
             storage_writer,
             last_sent: None,
             shell: shell::ShellState::default(),
@@ -796,24 +797,12 @@ impl App {
         match msg {
             Msg::Key(key) => self.handle_key(key),
             Msg::Paste(text) => {
-                let text = text.replace("\r\n", "\n").replace('\r', "\n");
                 if text.is_empty() {
                     if self.is_main_chat() && self.image_paste_rx.is_empty() {
                         self.start_image_paste();
                     }
                 } else {
-                    let mut any_image = false;
-                    if self.is_main_chat() {
-                        for line in text.lines() {
-                            if let Some((path, mt)) = image::try_parse_image_path(line) {
-                                self.start_file_image_paste(path, mt);
-                                any_image = true;
-                            }
-                        }
-                    }
-                    if !any_image {
-                        self.route_text_paste(&text);
-                    }
+                    self.insert_pasted(text);
                 }
                 vec![]
             }
@@ -2110,6 +2099,7 @@ impl App {
             | self.tick_edge_scroll()
             | self.tick_error_expiry()
             | self.poll_image_paste()
+            | self.poll_primary_paste()
             | self.btw_modal.poll()
             | self.status_bar.poll_branch_update()
             | self.status_bar.clear_expired_hint()

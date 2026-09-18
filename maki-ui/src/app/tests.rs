@@ -56,6 +56,7 @@ pub(crate) const RESEARCH_NAME: &str = "research";
 const SUB_TOOL_ID: &str = "sub_t1";
 const TOOL_OUTPUT_LINE: &str = "hello from the subagent";
 const LATE_MODEL_SPEC: &str = "zai/glm-5";
+const PRIMARY_TEXT: &str = "selected text";
 const HINT_PLUGIN: &str = "statusline";
 const HINT_TEXT: &str = "2/4 staged";
 const HINT_STYLE: &str = "fg";
@@ -572,6 +573,28 @@ fn paste_file_path_triggers_image_load() {
     app.update(Msg::Paste("file:///tmp/nonexistent.png".into()));
     assert!(!app.image_paste_rx.is_empty());
     assert_eq!(app.input_box.buffer.value(), "");
+}
+
+#[test]
+fn paste_loads_every_image_path_in_the_text() {
+    let mut app = test_app();
+    app.update(Msg::Paste(
+        "file:///tmp/one.png\nnot an image\nfile:///tmp/two.jpg".into(),
+    ));
+    assert_eq!(app.image_paste_rx.len(), 2);
+    assert_eq!(app.input_box.buffer.value(), "");
+}
+
+#[test_case(Some(PRIMARY_TEXT), PRIMARY_TEXT ; "selection_inserted")]
+#[test_case(None,               ""           ; "empty_selection_ignored")]
+fn primary_selection_read_lands_on_tick(selection: Option<&str>, expected: &str) {
+    let mut app = test_app();
+    let (tx, rx) = flume::bounded(1);
+    app.primary_paste_rx.push(rx);
+    tx.send(selection.map(String::from)).unwrap();
+    assert_eq!(app.tick(), Dirty::YES);
+    assert_eq!(app.input_box.buffer.value(), expected);
+    assert!(app.primary_paste_rx.is_empty());
 }
 
 #[test]
