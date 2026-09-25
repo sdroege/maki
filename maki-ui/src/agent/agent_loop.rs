@@ -212,7 +212,11 @@ impl AgentLoop {
         if *self.vars.apply("{cwd}") != old_cwd {
             self.reload_instructions().await;
         }
-        let prompt_slots = Arc::new(self.lua_handle.collect_prompt_slots_async().await);
+        let prompt_slots = Arc::new(
+            self.lua_handle
+                .collect_prompt_slots_async(Some(self.seed.session_id.as_str()))
+                .await,
+        );
         let vars = self.vars.clone();
         let instructions = self.instructions.text.clone();
         let slots = Arc::clone(&prompt_slots);
@@ -231,7 +235,7 @@ impl AgentLoop {
         compaction: &Compaction,
         cancel: &CancelToken,
     ) -> Result<DoneReason, AgentError> {
-        let (context, _) = self.context_builder().await;
+        let (context, prompt_slots) = self.context_builder().await;
         let slot = self.seed.model_slot.load();
         let (provider, model) = agent::resolve_compaction_model(
             &slot.provider,
@@ -243,6 +247,7 @@ impl AgentLoop {
         // The summary goes out under a fresh frame for the session's own model,
         // so the gauge and `/btw` read the prompt the next run sends.
         let next = context(&slot.model, compaction.workflow);
+        let hints = maki_agent::prompt::compact_hints(&prompt_slots);
         let hooks = AgentHooks {
             registry: ToolRegistry::global(),
             session_id: Some(&self.seed.session_id),
@@ -262,6 +267,7 @@ impl AgentLoop {
             &hooks,
             &self.seed.config,
             compaction.instructions.as_deref(),
+            &hints,
             self.seed.timeouts.retry,
         )
         .await

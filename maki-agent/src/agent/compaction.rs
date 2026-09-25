@@ -148,11 +148,14 @@ fn normalize(text: Option<&str>) -> Option<&str> {
 }
 
 /// Config instructions steer every compaction, `request` only the one the user
-/// asked for with `/compact <guidance>`, so both are kept and neither wins.
-fn summary_prompt(config: &AgentConfig, request: Option<&str>) -> String {
+/// asked for with `/compact <guidance>`, and `hints` the entries plugins
+/// registered for `prompt = "compact"`. All three are kept and none wins.
+fn summary_prompt(config: &AgentConfig, request: Option<&str>, hints: &str) -> String {
+    let hints = hints.trim();
     let extras = [
         normalize(config.compaction_instructions.as_deref()),
         normalize(request),
+        (!hints.is_empty()).then_some(hints),
     ]
     .into_iter()
     .flatten()
@@ -195,6 +198,7 @@ pub(super) async fn compact_history(
     hooks: &AgentHooks<'_>,
     config: &AgentConfig,
     instructions: Option<&str>,
+    hints: &str,
     carry_len: usize,
     retry: RetryPolicy,
 ) -> Result<Compacted, AgentError> {
@@ -205,7 +209,7 @@ pub(super) async fn compact_history(
     strip_images(&mut compaction_history);
     strip_thinking(&mut compaction_history);
     prepare_collapse(hooks, &mut compaction_history, RECENT_TOOL_RESULT_BUDGET).await;
-    compaction_history.push(Message::user(summary_prompt(config, instructions)));
+    compaction_history.push(Message::user(summary_prompt(config, instructions, hints)));
 
     let empty_tools = serde_json::json!([]);
     let max_attempts = 3;
@@ -329,6 +333,7 @@ pub async fn compact(
     hooks: &AgentHooks<'_>,
     config: &AgentConfig,
     instructions: Option<&str>,
+    hints: &str,
     retry: RetryPolicy,
 ) -> Result<DoneReason, AgentError> {
     let size_before = gauge.size();
@@ -356,6 +361,7 @@ pub async fn compact(
         hooks,
         config,
         steer.instructions.as_deref(),
+        hints,
         0,
         retry,
     )
@@ -631,6 +637,7 @@ mod tests {
     const CONFIG_EXTRA: &str = "Record anything that belongs in plan.md";
     const REQUEST_EXTRA: &str = "Keep the failing test names";
     const POST: &str = "Re-read plan.md and agent.md";
+    const COMPACT_HINT: &str = "This session keeps notes: list their filenames";
     const OVERFLOW_MESSAGE: &str = "prompt is too long";
     const OVERFLOW_STATUS: u16 = 413;
     /// Shorter than [`NEW_RESULT`], so the budget-burn case below is the only
@@ -760,6 +767,7 @@ mod tests {
             &test_hooks(&registry, None, &model, cancel),
             config,
             instructions,
+            "",
             RetryPolicy::default(),
         )
         .await
@@ -783,6 +791,7 @@ mod tests {
             &test_hooks(&registry, session_id, &model, &cancel),
             &AgentConfig::default(),
             None,
+            "",
             carry_len,
             RetryPolicy::default(),
         )
@@ -1042,6 +1051,7 @@ mod tests {
             &test_hooks(&registry, None, &model, &cancel),
             &AgentConfig::default(),
             instructions,
+            "",
             RetryPolicy::default(),
         )
         .await;
@@ -1147,31 +1157,36 @@ mod tests {
         });
     }
 
-    #[test_case(None, None, false, false ; "no_instructions")]
-    #[test_case(Some(CONFIG_EXTRA), None, true, false ; "config_only")]
-    #[test_case(None, Some(REQUEST_EXTRA), false, true ; "request_only")]
-    #[test_case(Some(CONFIG_EXTRA), Some(REQUEST_EXTRA), true, true ; "both_kept")]
-    #[test_case(Some(CONFIG_EXTRA), Some("   "), true, false ; "blank_request_ignored")]
-    #[test_case(Some(" \n "), Some(REQUEST_EXTRA), false, true ; "blank_config_ignored")]
+    #[test_case(None, None, "", false, false, false ; "no_instructions")]
+    #[test_case(Some(CONFIG_EXTRA), None, "", true, false, false ; "config_only")]
+    #[test_case(None, Some(REQUEST_EXTRA), "", false, true, false ; "request_only")]
+    #[test_case(Some(CONFIG_EXTRA), Some(REQUEST_EXTRA), "", true, true, false ; "config_and_request_kept")]
+    #[test_case(Some(CONFIG_EXTRA), Some("   "), "", true, false, false ; "blank_request_ignored")]
+    #[test_case(Some(" \n "), Some(REQUEST_EXTRA), "", false, true, false ; "blank_config_ignored")]
+    #[test_case(None, None, COMPACT_HINT, false, false, true ; "hint_only")]
+    #[test_case(Some(CONFIG_EXTRA), Some(REQUEST_EXTRA), COMPACT_HINT, true, true, true ; "all_three_kept")]
     fn summary_prompt_merges_instructions(
         config_extra: Option<&str>,
         request: Option<&str>,
+        hints: &str,
         has_config: bool,
         has_request: bool,
+        has_hint: bool,
     ) {
         let config = AgentConfig {
             compaction_instructions: config_extra.map(str::to_string),
             ..Default::default()
         };
-        let prompt = summary_prompt(&config, request);
+        let prompt = summary_prompt(&config, request, hints);
 
         assert!(prompt.starts_with(COMPACTION_USER));
         assert_eq!(
             prompt.len() > COMPACTION_USER.len(),
-            has_config || has_request
+            has_config || has_request || has_hint
         );
         assert_eq!(prompt.contains(CONFIG_EXTRA), has_config);
         assert_eq!(prompt.contains(REQUEST_EXTRA), has_request);
+        assert_eq!(prompt.contains(COMPACT_HINT), has_hint);
     }
 
     #[test]
