@@ -4657,6 +4657,19 @@ observation waits for the session's next agent run.
 - `{opts?}` (`table`) Options:
   - `session` (`string`) id of a live session.
   - `wake` (`boolean`) start a TUI turn when it next becomes idle (default false).
+  - `display` (`boolean|string`) echo the notice into the transcript between
+
+  the messages, so the user sees what the model was told. `true` shows
+
+
+  {text}; a string shows that text instead and must not be blank (the
+
+
+  empty string is reserved for synthetic messages, default false,
+
+
+  model-only).
+
 
 **Returns:** (`boolean|nil`, `string|nil`) true, or nil and an error.
 
@@ -4664,6 +4677,7 @@ observation waits for the session's next agent run.
 
 ```lua
 maki.session.notify("[monitor] deploy failed", { session = id, wake = true })
+maki.session.notify("context is nearly full", { session = id, wake = true, display = true })
 ```
 
 ---
