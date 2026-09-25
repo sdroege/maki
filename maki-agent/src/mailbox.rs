@@ -45,7 +45,9 @@ impl SessionMailbox {
     /// Queues {text} as an observation for the session's next agent run.
     /// `display` is echoed into the transcript between the messages, so the
     /// user sees what the model was told; `None` keeps the observation
-    /// model-only.
+    /// model-only. `wake` asks for delivery at the running agent's next turn
+    /// boundary, or a fresh turn when the session is idle, instead of
+    /// waiting for the next run.
     pub fn notify(
         session_id: MakiId,
         text: String,
@@ -71,6 +73,13 @@ impl SessionMailbox {
         state.pending.push_back(message);
         state.wake |= wake;
         Ok(())
+    }
+
+    /// Whether a waking notification is waiting. An agent run polls this
+    /// between turns so a wake is delivered mid-run, at the turn boundary,
+    /// instead of parking in the mailbox until the session goes quiescent.
+    pub fn has_wake(&self) -> bool {
+        lock(&self.state).wake
     }
 
     pub fn drain(&self) -> Vec<Message> {

@@ -390,7 +390,9 @@ async fn prompt(
 /// @param text string What to report. Must not be blank.
 /// @param opts table Options:
 ///   `session` (string) id of a live session.
-///   `wake` (boolean) start a TUI turn when it next becomes idle (default false).
+///   `wake` (boolean) deliver at the session's next turn boundary, or start a
+///   turn right away when it is idle (default false). A wake is a
+///   point-in-time claim, so it is not parked until the session goes idle.
 ///   `display` (boolean|string) echo the notice into the transcript between
 ///   the messages, so the user sees what the model was told. `true` shows
 ///   {text}; a string shows that text instead and must not be blank (the

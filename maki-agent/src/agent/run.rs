@@ -376,6 +376,17 @@ impl<'h> Agent<'h> {
         let Some(message) = message else {
             return Ok(());
         };
+        self.drain_mailbox()?;
+        self.tell_changes()?;
+        if !message.content.is_empty() {
+            self.history.push(message);
+        }
+        Ok(())
+    }
+
+    /// Mailbox observations join the history, and a `Notice` event carries
+    /// each display text into the transcript between the messages.
+    fn drain_mailbox(&mut self) -> Result<(), AgentError> {
         if let Some(mailbox) = &self.mailbox {
             for message in mailbox.drain() {
                 if let Some(text) = message.observation_display_text() {
@@ -385,10 +396,6 @@ impl<'h> Agent<'h> {
                 }
                 self.history.push(message);
             }
-        }
-        self.tell_changes()?;
-        if !message.content.is_empty() {
-            self.history.push(message);
         }
         Ok(())
     }
@@ -1069,53 +1076,66 @@ let compact_hints = crate::prompt::compact_hints(&self.prompt_slots);
     }
 
     async fn handle_queued_command(&mut self) -> Result<bool, AgentError> {
-        let Some(ref source) = self.interrupt_source else {
-            return Ok(false);
-        };
-        let Some(cmd) = source.poll() else {
-            return Ok(false);
-        };
-        // True only when something new landed for the model. Going on without
-        // it would send the finished answer back as the last message.
-        match cmd {
-            // The burst lands as consecutive user messages, so one request
-            // carries all of it.
-            ExtractedCommand::Interrupt(inputs) => {
-                let mut kept_any = false;
-                for input in inputs {
-                    self.event_tx.send(AgentEvent::QueueItemConsumed {
-                        text: input.message.clone(),
-                        images: input.images.clone(),
-                    })?;
-                    let kept = self
-                        .filter_user_message(input.message, input.images.len(), input.source)
-                        .await?;
-                    let message = kept.map(|text| interrupt_message(text, input.images));
-                    if message.is_some() {
-                        self.mode = input.mode;
-                        // The user spoke, so `agent.stop` gets its full
-                        // allowance back.
-                        self.stop_continuations = 0;
-                        kept_any = true;
+        if let Some(ref source) = self.interrupt_source
+            && let Some(cmd) = source.poll()
+        {
+            // True only when something new landed for the model. Going on without
+            // it would send the finished answer back as the last message.
+            match cmd {
+                // The burst lands as consecutive user messages, so one request
+                // carries all of it.
+                ExtractedCommand::Interrupt(inputs) => {
+                    let mut kept_any = false;
+                    for input in inputs {
+                        self.event_tx.send(AgentEvent::QueueItemConsumed {
+                            text: input.message.clone(),
+                            images: input.images.clone(),
+                        })?;
+                        let kept = self
+                            .filter_user_message(input.message, input.images.len(), input.source)
+                            .await?;
+                        let message = kept.map(|text| interrupt_message(text, input.images));
+                        if message.is_some() {
+                            self.mode = input.mode;
+                            // The user spoke, so `agent.stop` gets its full
+                            // allowance back.
+                            self.stop_continuations = 0;
+                            kept_any = true;
+                        }
+                        self.land_input(input.preamble, message)?;
                     }
-                    self.land_input(input.preamble, message)?;
+                    Ok(kept_any)
                 }
-                Ok(kept_any)
+                ExtractedCommand::Compact(instructions) => {
+                    let Some(steer) = compaction::steer_compaction(
+                        &self.hooks(),
+                        &self.config,
+                        CompactReason::Manual,
+                        instructions.as_deref(),
+                    )
+                    .await
+                    else {
+                        return Ok(false);
+                    };
+                    self.do_compact(steer).await?;
+                    Ok(true)
+                }
             }
-            ExtractedCommand::Compact(instructions) => {
-                let Some(steer) = compaction::steer_compaction(
-                    &self.hooks(),
-                    &self.config,
-                    CompactReason::Manual,
-                    instructions.as_deref(),
-                )
-                .await
-                else {
-                    return Ok(false);
-                };
-                self.do_compact(steer).await?;
-                Ok(true)
+            // An interrupt drains the mailbox on its way into the history,
+            // so a wake still pending below means nothing was queued. A
+            // compact does not drain, so a wake landing on its boundary
+            // rides to the next turn.
+        } else {
+            // A waking notification is a point-in-time claim about the session
+            // ("the context is nearly full"): a run that parks it until the
+            // session goes quiescent delivers stale advice, long after a
+            // compaction resolved the situation it warned about. Deliver it
+            // here, at the turn boundary, while it is still true.
+            let woken = self.mailbox.as_ref().is_some_and(SessionMailbox::has_wake);
+            if woken {
+                self.drain_mailbox()?;
             }
+            Ok(woken)
         }
     }
 }
@@ -1487,6 +1507,68 @@ mod tests {
             assert_eq!(history.as_slice().len(), 2);
             assert!(history.as_slice()[0].is_observation());
             assert!(matches!(history.as_slice()[1].role, Role::Assistant));
+        });
+    }
+
+    /// A wake is a point-in-time claim, so a run in flight claims it at the
+    /// turn boundary instead of leaving it parked until the session goes
+    /// quiescent, which can be many turns and a compaction later.
+    #[test]
+    fn waking_mailbox_notice_is_delivered_at_the_turn_boundary() {
+        smol::block_on(async {
+            let id = maki_storage::id::MakiId::generate();
+            let mailbox = SessionMailbox::register(id);
+            let mut history = History::new(Vec::new());
+            let (mut agent, event_rx) = make_agent(MockProvider::new(Vec::new()), &mut history);
+            agent.mailbox = Some(mailbox.clone());
+
+            SessionMailbox::notify(
+                id,
+                "context is nearly full".into(),
+                Some("context is nearly full".into()),
+                true,
+            )
+            .unwrap();
+
+            assert!(agent.handle_queued_command().await.unwrap());
+            drop(agent);
+
+            let notice = &history.as_slice()[0];
+            assert!(notice.is_observation());
+            assert_eq!(notice.user_text(), Some("context is nearly full"));
+            // The displayed text is echoed for the transcript, like the
+            // quiescent starter does.
+            assert_eq!(
+                notice.observation_display_text(),
+                Some("context is nearly full")
+            );
+            assert!(has_event(&drain_events(&event_rx), |e| matches!(
+                e,
+                AgentEvent::Notice { .. }
+            )));
+            // Claimed by the run, so the quiescent starter finds nothing left.
+            assert!(mailbox.claim_wake().is_empty());
+        });
+    }
+
+    /// Without a wake the observation keeps its old timing: it rides the next
+    /// run instead of extending the current one.
+    #[test]
+    fn quiet_mailbox_notice_does_not_extend_a_run() {
+        smol::block_on(async {
+            let id = maki_storage::id::MakiId::generate();
+            let mailbox = SessionMailbox::register(id);
+            let mut history = History::new(Vec::new());
+            let (mut agent, _event_rx) = make_agent(MockProvider::new(Vec::new()), &mut history);
+            agent.mailbox = Some(mailbox.clone());
+
+            SessionMailbox::notify(id, "deploy failed".into(), None, false).unwrap();
+
+            assert!(!agent.handle_queued_command().await.unwrap());
+            drop(agent);
+
+            assert!(history.as_slice().is_empty());
+            assert_eq!(mailbox.drain().len(), 1);
         });
     }
 
