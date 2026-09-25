@@ -318,7 +318,10 @@ impl SessionMailbox {
     }
 
     /// `display` becomes the observation's transcript line, shown and saved
-    /// once an agent run accepts it. The model only ever reads `text`.
+    /// once an agent run accepts it. The model only ever reads `text`. `wake`
+    /// asks for delivery at the running agent's next turn boundary, or a
+    /// fresh turn when the session is idle, instead of waiting for the next
+    /// run.
     pub fn notify(
         session_id: MakiId,
         text: String,
@@ -342,6 +345,13 @@ impl SessionMailbox {
 
     pub fn session_id(&self) -> MakiId {
         self.session_id
+    }
+
+    /// Whether a waking notification is waiting. An agent run polls this
+    /// between turns so a wake is delivered mid-run, at the turn boundary,
+    /// instead of parking in the mailbox until the session goes quiescent.
+    pub fn has_wake(&self) -> bool {
+        lock(&self.live.mailbox).wake
     }
 
     pub fn drain(&self) -> Vec<Message> {

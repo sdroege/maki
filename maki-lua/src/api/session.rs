@@ -773,8 +773,10 @@ async fn prompt(
 /// @param text string What to report. Must not be blank.
 /// @param opts table Options:
 ///   `session` (string) id of a live session.
-///   `wake` (boolean) start a TUI turn when it next becomes idle (default
-///     false). Needs the `agent` permission.
+///   `wake` (boolean) deliver at the session's next turn boundary, or start a
+///   turn right away when it is idle (default false). A wake is a
+///   point-in-time claim, so it is not parked until the session goes idle.
+///   Needs the `agent` permission.
 ///   `display` (string?) one-line note for the transcript, shown and saved
 ///     when the session's agent run accepts the report. Whitespace collapses
 ///     to single spaces and the note is cut to 256 bytes. Defaults to

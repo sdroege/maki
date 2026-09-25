@@ -139,6 +139,7 @@ declare maki: {
   },
   provider: {
     register: @checked (spec: any) -> (),
+    is_selected: @checked (slug: string) -> (boolean),
     http_error: @checked (res: any) -> (any),
     auth: {
       get: @checked (slug: string) -> (any, string?),
