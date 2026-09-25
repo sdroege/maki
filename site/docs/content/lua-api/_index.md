@@ -583,8 +583,26 @@ until the next compaction.
 
 - `{spec}` (`table`) Hint specification:
   - `slot` (`string`) Required. Aggregate slot name (e.g. "tool_usage", "general").
-  - `content` (`string|function`) Required. Static text, or a `function()` that returns a string. Max 1 MiB.
-  - `prompt` (`string|string[]`) Optional. Restrict to specific prompt ids (e.g. "system").
+    For `prompt = "compact"` entries no template has
+    to contain it: entries are gathered across all
+    slots, and the slot only positions the entry in
+    the gathered order.
+  - `content` (`string|function`) Required. Static text, or a `function(ctx)` that
+    returns a string. Max 1 MiB. `ctx` is
+    `{ session_id = "..." }` naming the session whose
+    prompt is being built, or nil when there is no
+    session to name (startup, headless one-shots,
+    ACP clients).
+  - `prompt` (`string|string[]`) Optional. Restrict to specific prompt ids
+    (e.g. "system", "compact"). "compact" entries
+    are appended to the compaction summary prompt
+    as extra instructions instead of a template.
+    They resolve with the run's other prompt
+    slots, so nothing caches them across turns:
+    auto-compaction sees them as of the start of
+    the run, a manual /compact as of the moment it
+    was requested. ACP clients are the exception:
+    they resolve all hints once at startup.
 
 **Example:**
 
@@ -652,7 +670,8 @@ as in `register_prompt_hint`.
 
 - `{spec}` (`table`) Spec fields mirror `register_prompt_hint`:
   - `slot` (`string`) Required. Singleton slot name (e.g. "identity", "tone").
-  - `content` (`string|function`) Required. Static text or a `function()` returning a string. Max 1 MiB.
+  - `content` (`string|function`) Required. Static text or a `function(ctx)` returning a
+    string. Max 1 MiB. `ctx` as in `register_prompt_hint`.
   - `prompt` (`string|string[]`) Optional. Restrict to specific prompt ids.
 
 **Example:**
@@ -793,11 +812,18 @@ which is about a directory rather than a session. For `"SessionReset"` and
 `"SessionEnd"` that is the session being left behind, the other events
 name the session now running or focused. What each event adds:
 
-- `"ToolStart"`, `"ToolDone"`: `data.tool_id` and `data.tool`.
-- `"ToolDone"` adds `data.is_error` and `data.bytes`, the size of the
+- `"ToolStart"`: `data.tool_id` and `data.tool`.
+- `"ToolDone"`: `data.is_error` and `data.bytes`, the size of the
   text the model reads. A call that ran also carries `data.duration_ms`
   and `data.input`, the input after every `tool.*.input` layer. A call
-  that never ran, like a cancelled one, has neither.
+  that never ran, like a cancelled one, has neither. `data.context_size`
+  with `data.context_window`, the context usage of the run the tool
+  served when it was dispatched (a window of 0 means no run to ask, so
+  guard any division against it). Mid-turn, before `"AutoCompacting"`
+  fires, so a plugin can nudge the model while there is still room to
+  act. Fires for subagent tool calls too, with `data.subagent` true and
+  the subagent's own usage, which says nothing about the parent
+  session's context.
 - `"TurnStart"`: `data.text`, the message that started the turn.
 - `"TurnEnd"`: `data.reason` (`"finished"`, `"max_tokens"`,
   `"max_turns"`, `"cancelled"`, or `"dropped"` when an
@@ -853,7 +879,9 @@ name the session now running or focused. What each event adds:
   again only ever re-reads the root the plugin passed.
 
 `"TurnEnd"` fires once per turn and only for the main session, so
-subagent turns never show up. A manual `/compact` ends its run without
+subagent turns never show up. The same boundedness applies to every
+subagent envelope except `"ToolDone"`, which fires for subagent tool
+calls too. A manual `/compact` ends its run without
 ending a turn, so it stays quiet too.
 
 Drivers are not all caught up. `"TurnStart"` and `"PlanReady"` come from
@@ -4463,6 +4491,54 @@ local last = msgs and msgs[1]
 if last and last.role == "assistant" then
   print(last.content[1].text)
 end
+```
+
+---
+
+### `maki.session.transcript()` {#maki-session-transcript}
+
+```lua
+maki.session.transcript({opts?})
+```
+
+Reads a session's transcript, window by window. The current window is
+`windows[1]` and holds the live conversation; with `archives = true` the
+archived pre-compaction windows follow, oldest first, labeled with the
+sequence numbers their filenames carry (stable while pruning drops the
+oldest and leaves gaps). A live session answers from memory, so an
+in-flight turn appears only once it completes: a batch still running is
+cut rather than closed with placeholder results.
+
+Each window is:
+```text
+{
+  id = "current" | "<seq>",
+  created_at,           -- when the window began: session start, or the
+                         -- compaction that opened it (approximated)
+  messages = { {role, content, ...}, ... },  -- content-block format,
+                                              -- tool results included
+  subagents = { { nr, name, messages }, ... }, -- transcripts that belong
+                                               -- to this window, ordered
+                                               -- by spawn; nr is the
+                                               -- stable 1-based spawn
+                                               -- position, for numbering
+                                               -- a transcript's items
+}
+```
+
+**Parameters:**
+
+- `{opts?}` (`table?`) Options:
+  - `session` (`string`) id of a live or stored session; defaults to focused.
+  - `archives` (`boolean`) include the session's archived windows (default false).
+
+**Returns:** (`table|nil`, `string|nil`) `{ id, windows }`, or nil and an error.
+
+**Example:**
+
+```lua
+local t, err = maki.session.transcript({ archives = true })
+local current = t.windows[1]
 ```
 
 ---
