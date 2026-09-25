@@ -1,13 +1,15 @@
 //! The one vocabulary every driver uses to talk about a persisted session.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
-use maki_providers::{ContextGauge, Message, TokenUsage};
+use maki_providers::{ContentBlock, ContextGauge, Message, Role, TokenUsage};
 use maki_storage::StateDir;
 use maki_storage::frame::StoredFrame;
 use maki_storage::id::SessionRef;
-use maki_storage::sessions::{SAVE_FAILED, Session, SessionClaim, SessionError};
+use maki_storage::sessions::{SAVE_FAILED, Session, SessionArchive, SessionClaim, SessionError};
+use serde_json::{Value, json};
 use tracing::warn;
 
 use crate::agent::{
@@ -19,6 +21,9 @@ use crate::{AgentRunParams, ToolOutput};
 /// The one spelling of a persisted maki session. It cannot live in
 /// maki-storage: [`ToolOutput`] is ours, and maki-storage must not depend on us.
 pub type StoredSession = Session<Message, TokenUsage, ToolOutput>;
+
+/// The one spelling of an archived pre-compaction window of the same.
+pub type StoredArchive = SessionArchive<Message, TokenUsage, ToolOutput>;
 
 /// A transcript a driver starts from. The id comes from the caller, because
 /// every entry point resolves one and reports it before the run starts, and a
@@ -217,14 +222,227 @@ impl SessionStore {
     }
 }
 
+// -- `maki.session.messages` payload --
+
+const CURRENT_WINDOW_ID: &str = "current";
+const FALLBACK_SUBAGENT_NAME: &str = "subagent";
+const UNRESOLVED_TOOL_RESULT: &str = "[tool result unavailable]";
+
+/// The transcript a plugin reads through `maki.session.messages`: the live
+/// window first, then every archived pre-compaction window oldest first.
+/// Each window carries its messages in the content-block format, the
+/// subagent transcripts that belong to it, and a `created_at` that is the
+/// best record of when the window began: the session's start, or for a
+/// post-compaction window the seal time of the newest archive (the
+/// compaction that opened it happened right then). Archives report their
+/// own seal time. `seal_at` is that newest seal time for callers that did
+/// not load the archives, so the current window's `created_at` does not
+/// depend on whether they were requested. `trim_in_flight` cuts the trailing
+/// tool batch of the current window when the caller knows a turn is running:
+/// its calls have no output yet, and the placeholder that would close
+/// them reads as a failure. Only settled content shows; the turn joins
+/// once it completes.
+pub fn messages_json(
+    current: &StoredSession,
+    archives: &[StoredArchive],
+    seal_at: Option<u64>,
+    trim_in_flight: bool,
+) -> Value {
+    let current_created_at = archives
+        .last()
+        .map_or_else(|| seal_at.unwrap_or(current.created_at), |newest| {
+            newest.session.updated_at
+        });
+    let attach = subagent_attach(current, archives);
+    let mut windows = Vec::with_capacity(archives.len() + 1);
+    windows.push(window_json(
+        CURRENT_WINDOW_ID,
+        current_created_at,
+        current,
+        &attach[archives.len()],
+        trim_in_flight,
+    ));
+    for (archive, attach) in archives.iter().zip(&attach) {
+        windows.push(window_json(
+            &archive.seq.to_string(),
+            archive.session.updated_at,
+            &archive.session,
+            attach,
+            false,
+        ));
+    }
+    json!({ "id": current.id.to_string(), "windows": windows })
+}
+
+fn window_json(
+    id: &str,
+    created_at: u64,
+    session: &StoredSession,
+    attach: &[&str],
+    trim_in_flight: bool,
+) -> Value {
+    let messages = session.messages();
+    let cut =
+        messages.len() - usize::from(trim_in_flight && trailing_batch_unresolved(session));
+    let settled = &messages[..cut];
+    let mut value = json!(settled);
+    if let Some(closing) = dangling_results(settled, session) {
+        value.as_array_mut().unwrap().push(json!(closing));
+    }
+    json!({
+        "id": id,
+        "created_at": created_at,
+        "messages": value,
+        "subagents": subagents_json(session, attach),
+    })
+}
+
+/// The trailing message opens a tool batch whose calls have no recorded
+/// output. Nothing after it can answer them, so on a live session the batch
+/// is still running and only a completed call's output can settle it - the
+/// same criterion [`dangling_results`] would flag as an error placeholder.
+fn trailing_batch_unresolved(session: &StoredSession) -> bool {
+    session.messages().last().is_some_and(|last| {
+        last.tool_uses()
+            .map(|(id, _, _)| id)
+            .any(|id| !session.tool_outputs().contains_key(id))
+    })
+}
+
+fn tool_use_ids(session: &StoredSession) -> impl Iterator<Item = &str> {
+    session
+        .messages()
+        .iter()
+        .flat_map(|m| m.tool_uses().map(|(id, _, _)| id))
+}
+
+/// Per window, oldest first with the current window last, the subagent ids
+/// whose transcript attaches there. A transcript belongs to the window
+/// holding its parent `tool_use`, and when pruning has taken that window
+/// it belongs to the oldest window that still holds its records, which a
+/// rewrite always leaves somewhere because it carries every record forward.
+fn subagent_attach<'a>(
+    current: &'a StoredSession,
+    archives: &'a [StoredArchive],
+) -> Vec<Vec<&'a str>> {
+    let sessions: Vec<&StoredSession> = archives
+        .iter()
+        .map(|a| &a.session)
+        .chain(std::iter::once(current))
+        .collect();
+    let mut parent_at: HashMap<&str, usize> = HashMap::new();
+    let mut records_at: HashMap<&str, usize> = HashMap::new();
+    for (idx, session) in sessions.iter().enumerate() {
+        for id in tool_use_ids(session) {
+            parent_at.insert(id, idx);
+        }
+        for id in session.subagent_messages().keys() {
+            records_at.entry(id.as_str()).or_insert(idx);
+        }
+    }
+    let mut attach = vec![Vec::new(); sessions.len()];
+    for (id, records_at) in records_at {
+        attach[parent_at.get(id).copied().unwrap_or(records_at)].push(id);
+    }
+    attach
+}
+
+/// A user message closing `tool_use` blocks nothing later in the window
+/// answers, which a crash mid-turn can leave behind. Results resolve from
+/// the window's `out` records; a call with no recorded output gets a clean
+/// error placeholder, so no `tool_use_id` dangles.
+fn dangling_results(messages: &[Message], session: &StoredSession) -> Option<Message> {
+    let answered: Vec<&str> = messages
+        .iter()
+        .flat_map(|m| {
+            m.content.iter().filter_map(|block| match block {
+                ContentBlock::ToolResult { tool_use_id, .. } => Some(tool_use_id.as_str()),
+                _ => None,
+            })
+        })
+        .collect();
+    let missing: Vec<&str> = messages
+        .iter()
+        .flat_map(|m| m.tool_uses().map(|(id, _, _)| id))
+        .filter(|id| !answered.contains(id))
+        .collect();
+    if missing.is_empty() {
+        return None;
+    }
+    let content = missing
+        .into_iter()
+        .map(|id| match session.tool_outputs().get(id) {
+            Some(output) => ContentBlock::ToolResult {
+                tool_use_id: id.to_owned(),
+                content: output.as_text(),
+                is_error: false,
+                loaded_tools: output.loaded_tools().to_vec(),
+            },
+            None => ContentBlock::ToolResult {
+                tool_use_id: id.to_owned(),
+                content: UNRESOLVED_TOOL_RESULT.into(),
+                is_error: true,
+                loaded_tools: Vec::new(),
+            },
+        })
+        .collect();
+    Some(Message {
+        role: Role::User,
+        content,
+        ..Default::default()
+    })
+}
+
+/// The subagent transcripts that attach to this window (see
+/// [`subagent_attach`]). Names come from the session's `subagents` list; a
+/// record with none gets a placeholder.
+/// Ordered by spawn with a stable `nr`: the 1-based position in the
+/// session's subagent list, assigned at spawn and never reused, so a
+/// transcript that attaches after one spawned later does not renumber it.
+/// Attached ids the list predates go last, id-sorted.
+fn subagents_json(session: &StoredSession, attach: &[&str]) -> Value {
+    let meta = session.subagents();
+    let mut entries: Vec<(usize, String, &Arc<Vec<Message>>)> = meta
+        .iter()
+        .enumerate()
+        .filter(|(_, sa)| attach.contains(&sa.tool_use_id.as_str()))
+        .filter_map(|(i, sa)| {
+            Some((
+                i + 1,
+                sa.name.clone(),
+                session.subagent_messages().get(&sa.tool_use_id)?,
+            ))
+        })
+        .collect();
+    let mut unlisted: Vec<&str> = attach
+        .iter()
+        .copied()
+        .filter(|id| !meta.iter().any(|sa| sa.tool_use_id == *id))
+        .collect();
+    unlisted.sort_unstable();
+    for (i, id) in unlisted.into_iter().enumerate() {
+        if let Some(messages) = session.subagent_messages().get(id) {
+            entries.push((meta.len() + i + 1, FALLBACK_SUBAGENT_NAME.to_owned(), messages));
+        }
+    }
+    entries
+        .into_iter()
+        .map(|(nr, name, messages)| {
+            json!({ "nr": nr, "name": name, "messages": messages.as_ref().as_slice() })
+        })
+        .collect::<Vec<_>>()
+        .into()
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
+    use std::sync::Arc;
 
     use maki_providers::{ContentBlock, Role};
     use maki_storage::frame::PromptFacts;
     use maki_storage::id::MakiId;
-    use maki_storage::sessions::{SESSIONS_DIR, generate_title};
+    use maki_storage::sessions::{SESSIONS_DIR, StoredSubagent, generate_title};
     use tempfile::TempDir;
     use test_case::test_case;
 
@@ -547,5 +765,302 @@ mod tests {
 
         drop(track);
         assert!(live_history(id).is_none());
+    }
+
+    // -- messages_json --
+
+    const TOOL_ID: &str = "tool-1";
+    const SUB_ID: &str = "sub-1";
+    const STALE_SUB_ID: &str = "sub-archived";
+    const RESOLVED_RESULT: &str = "the recorded output";
+    const CURRENT_FIRST: &str = "current window answers first";
+    const ARCHIVE_FIRST: &str = "archives answer oldest first";
+
+    fn assistant_tool_use(id: &str) -> Message {
+        Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::tool_use(id, "bash", serde_json::json!({}))],
+            ..Default::default()
+        }
+    }
+
+    fn archive_window(seq: u64, text: &str, updated_at: u64) -> StoredArchive {
+        let mut session = StoredSession::new(MODEL_SPEC, CWD);
+        session.push_message(Message::user(text.into()));
+        session.updated_at = updated_at;
+        StoredArchive { seq, session }
+    }
+
+    #[test]
+    fn messages_json_lists_current_first_then_archives_oldest_first() {
+        let mut session = StoredSession::new(MODEL_SPEC, CWD);
+        session.push_message(Message::user(PROMPT.into()));
+        let archives = [archive_window(1, "old", 100), archive_window(3, "new", 200)];
+
+        let value = messages_json(&session, &archives, None, false);
+        let ids: Vec<&str> = value["windows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|w| w["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, [CURRENT_WINDOW_ID, "1", "3"], "{CURRENT_FIRST}");
+        let created: Vec<u64> = value["windows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|w| w["created_at"].as_u64().unwrap())
+            .collect();
+        assert_eq!(created, [200, 100, 200], "{ARCHIVE_FIRST}");
+    }
+
+    #[test]
+    fn messages_json_without_archives_reports_the_session_start() {
+        let mut session = StoredSession::new(MODEL_SPEC, CWD);
+        session.push_message(Message::user(PROMPT.into()));
+
+        let value = messages_json(&session, &[], None, false);
+        assert_eq!(
+            value["windows"][0]["created_at"].as_u64(),
+            Some(session.created_at)
+        );
+    }
+
+    #[test]
+    fn messages_json_dates_an_unloaded_current_window_from_the_seal_time() {
+        let mut session = StoredSession::new(MODEL_SPEC, CWD);
+        session.push_message(Message::user(PROMPT.into()));
+        let archives = [archive_window(2, "new", 200)];
+
+        let value = messages_json(&session, &[], Some(500), false);
+        assert_eq!(value["windows"][0]["created_at"].as_u64(), Some(500));
+
+        let value = messages_json(&session, &archives, Some(500), false);
+        assert_eq!(
+            value["windows"][0]["created_at"].as_u64(),
+            Some(200),
+            "a loaded newest archive outranks the fallback"
+        );
+    }
+
+    #[test]
+    fn messages_json_closes_dangling_tool_uses_from_out_records() {
+        let mut session = StoredSession::new(MODEL_SPEC, CWD);
+        session.push_message(assistant_tool_use(TOOL_ID));
+        session.insert_tool_output(
+            TOOL_ID.into(),
+            Arc::new(ToolOutput::Plain(RESOLVED_RESULT.into())),
+        );
+
+        let window = &messages_json(&session, &[], None, false)["windows"][0];
+        let messages = window["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 2, "{CURRENT_FIRST}");
+        assert_eq!(
+            messages[1]["content"][0]["content"].as_str(),
+            Some(RESOLVED_RESULT)
+        );
+    }
+
+    #[test]
+    fn messages_json_flags_a_dangling_tool_use_with_no_output() {
+        let mut session = StoredSession::new(MODEL_SPEC, CWD);
+        session.push_message(assistant_tool_use(TOOL_ID));
+
+        let window = &messages_json(&session, &[], None, false)["windows"][0];
+        let block = &window["messages"].as_array().unwrap()[1]["content"][0];
+        assert_eq!(block["content"].as_str(), Some(UNRESOLVED_TOOL_RESULT));
+        assert_eq!(block["is_error"].as_bool(), Some(true));
+    }
+
+    #[test]
+    fn messages_json_trims_a_trailing_batch_without_output() {
+        let mut session = StoredSession::new(MODEL_SPEC, CWD);
+        session.push_message(Message::user(PROMPT.into()));
+        session.push_message(assistant_tool_use(TOOL_ID));
+
+        let window = &messages_json(&session, &[], None, true)["windows"][0];
+        let messages = window["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 1, "only the prompt is settled");
+        assert_eq!(messages[0]["role"].as_str(), Some("user"));
+    }
+
+    #[test]
+    fn messages_json_keeps_a_trailing_batch_whose_outputs_recorded() {
+        let mut session = StoredSession::new(MODEL_SPEC, CWD);
+        session.push_message(assistant_tool_use(TOOL_ID));
+        session.insert_tool_output(
+            TOOL_ID.into(),
+            Arc::new(ToolOutput::Plain(RESOLVED_RESULT.into())),
+        );
+
+        let window = &messages_json(&session, &[], None, true)["windows"][0];
+        let messages = window["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 2, "a settled batch stays");
+        assert_eq!(
+            messages[1]["content"][0]["content"].as_str(),
+            Some(RESOLVED_RESULT)
+        );
+        assert!(
+            messages[1]["content"][0]["is_error"].is_null(),
+            "a settled batch closes without an error flag"
+        );
+    }
+
+    #[test]
+    fn messages_json_keeps_dangling_placeholders_mid_window_when_trimming() {
+        let mut session = StoredSession::new(MODEL_SPEC, CWD);
+        session.push_message(assistant_tool_use(TOOL_ID));
+        session.push_message(Message::user("the turn moved on".into()));
+
+        let window = &messages_json(&session, &[], None, true)["windows"][0];
+        let messages = window["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 3, "crash residue keeps its placeholder");
+        assert_eq!(
+            messages[2]["content"][0]["content"].as_str(),
+            Some(UNRESOLVED_TOOL_RESULT)
+        );
+    }
+
+    #[test]
+    fn messages_json_attaches_subagents_to_the_window_that_spawned_them() {
+        let mut archived = StoredSession::new(MODEL_SPEC, CWD);
+        archived.push_message(assistant_tool_use(STALE_SUB_ID));
+        archived.set_subagent_messages(
+            STALE_SUB_ID.into(),
+            vec![Message::user("archived turn".into())],
+        );
+        archived.set_subagents(vec![StoredSubagent {
+            tool_use_id: STALE_SUB_ID.into(),
+            name: "scout".into(),
+            model: None,
+            thinking: None,
+            fast: false,
+        }]);
+        let archives = [StoredArchive {
+            seq: 1,
+            session: archived,
+        }];
+
+        let mut session = StoredSession::new(MODEL_SPEC, CWD);
+        session.push_message(assistant_tool_use(SUB_ID));
+        session.set_subagent_messages(SUB_ID.into(), vec![Message::user("sub turn".into())]);
+        // The rewrite that opened the current window carried the archive's
+        // records along, so both windows hold them.
+        session.set_subagent_messages(
+            STALE_SUB_ID.into(),
+            vec![Message::user("archived turn".into())],
+        );
+        session.set_subagents(vec![StoredSubagent {
+            tool_use_id: SUB_ID.into(),
+            name: "researcher".into(),
+            model: None,
+            thinking: None,
+            fast: false,
+        }]);
+
+        let value = messages_json(&session, &archives, None, false);
+        let windows = value["windows"].as_array().unwrap();
+        let names = |window: &Value| -> Vec<String> {
+            window["subagents"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|s| s["name"].as_str().unwrap().to_owned())
+                .collect()
+        };
+        assert_eq!(names(&windows[0]), ["researcher"], "{CURRENT_FIRST}");
+        assert_eq!(names(&windows[1]), ["scout"], "{ARCHIVE_FIRST}");
+    }
+
+    /// Pruning drops the oldest archives, so a transcript can outlive the
+    /// window that spawned it. Its records were carried into every later
+    /// window, so the oldest survivor renders them instead of the
+    /// transcript quietly disappearing with its parent.
+    #[test]
+    fn messages_json_keeps_a_subagent_whose_parent_window_was_pruned() {
+        let mut archived = StoredSession::new(MODEL_SPEC, CWD);
+        archived.set_subagent_messages(
+            STALE_SUB_ID.into(),
+            vec![Message::user("orphaned turn".into())],
+        );
+        let archives = [StoredArchive {
+            seq: 2,
+            session: archived,
+        }];
+
+        let mut session = StoredSession::new(MODEL_SPEC, CWD);
+        session.set_subagent_messages(
+            STALE_SUB_ID.into(),
+            vec![Message::user("orphaned turn".into())],
+        );
+
+        let value = messages_json(&session, &archives, None, false);
+        let windows = value["windows"].as_array().unwrap();
+        assert_eq!(
+            windows[0]["subagents"].as_array().unwrap().len(),
+            0,
+            "{CURRENT_FIRST}"
+        );
+        let subagents = windows[1]["subagents"].as_array().unwrap();
+        assert_eq!(subagents.len(), 1, "{ARCHIVE_FIRST}");
+        assert_eq!(subagents[0]["name"].as_str(), Some(FALLBACK_SUBAGENT_NAME));
+        assert_eq!(
+            subagents[0]["messages"][0]["content"][0]["text"],
+            "orphaned turn"
+        );
+    }
+
+    #[test]
+    fn messages_json_names_an_unrecorded_subagent_with_a_placeholder() {
+        let mut session = StoredSession::new(MODEL_SPEC, CWD);
+        session.push_message(assistant_tool_use(SUB_ID));
+        session.set_subagent_messages(SUB_ID.into(), vec![Message::user("sub turn".into())]);
+
+        let window = &messages_json(&session, &[], None, false)["windows"][0];
+        assert_eq!(
+            window["subagents"][0]["name"].as_str(),
+            Some(FALLBACK_SUBAGENT_NAME)
+        );
+    }
+
+    /// The list order is spawn order with each subagent at the position it
+    /// was spawned at, so a consumer can number a transcript's items off
+    /// `nr` without a later-attaching earlier spawn renumbering anything.
+    #[test]
+    fn messages_json_numbers_subagents_by_spawn_position() {
+        let mut session = StoredSession::new(MODEL_SPEC, CWD);
+        for id in ["sub-1", "sub-2", "sub-unlisted"] {
+            session.set_subagent_messages(id.into(), vec![Message::user("sub turn".into())]);
+        }
+        session.set_subagents(vec![
+            StoredSubagent {
+                tool_use_id: "sub-1".into(),
+                name: "scout".into(),
+                model: None,
+                thinking: None,
+                fast: false,
+            },
+            StoredSubagent {
+                tool_use_id: "sub-2".into(),
+                name: "researcher".into(),
+                model: None,
+                thinking: None,
+                fast: false,
+            },
+        ]);
+
+        let window = &messages_json(&session, &[], None, false)["windows"][0];
+        let subagents = window["subagents"].as_array().unwrap();
+        assert_eq!(subagents.len(), 3, "every attached transcript lists");
+        assert_eq!(subagents[0]["nr"].as_u64(), Some(1));
+        assert_eq!(subagents[0]["name"].as_str(), Some("scout"));
+        assert_eq!(subagents[1]["nr"].as_u64(), Some(2));
+        assert_eq!(subagents[1]["name"].as_str(), Some("researcher"));
+        assert_eq!(
+            subagents[2]["nr"].as_u64(),
+            Some(3),
+            "an id the subagent list predates numbers after the listed ones"
+        );
+        assert_eq!(subagents[2]["name"].as_str(), Some(FALLBACK_SUBAGENT_NAME));
     }
 }

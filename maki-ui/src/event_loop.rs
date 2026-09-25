@@ -1265,6 +1265,48 @@ impl<'t> EventLoop<'t> {
                 };
                 let _ = reply_tx.send(reply);
             }
+            SessionRequest::Messages { id, archives } => {
+                let resolved = self
+                    .resolve_messages_target(id.as_deref())
+                    .map(|(id, live, in_flight)| (id, live, in_flight, archives));
+                // The stored load, the archive parses, and the serialization
+                // run off the loop, like `List`: a big transcript must not
+                // stall input.
+                let storage = self.ctx.storage.clone();
+                smol::unblock(move || {
+                    let reply = resolved.and_then(|(id, live, in_flight, archives)| {
+                        let stored = match live {
+                            Some(_) => None,
+                            None => Some(AppSession::load(id, &storage).map_err(|e| e.to_string())?),
+                        };
+                        let session = live
+                            .as_deref()
+                            .or(stored.as_ref())
+                            .expect("a live tab or a stored session");
+                        let windows = if archives {
+                            AppSession::archives(id, &storage)
+                        } else {
+                            Vec::new()
+                        };
+                        // Dating the current window must not depend on
+                        // whether the archives were requested, so ask for the
+                        // seal time when they were not loaded.
+                        let seal_at = if archives {
+                            None
+                        } else {
+                            AppSession::newest_archive_seal_at(id, &storage)
+                        };
+                        Ok(maki_agent::session::messages_json(
+                            session,
+                            &windows,
+                            seal_at,
+                            in_flight,
+                        ))
+                    });
+                    let _ = reply_tx.send(reply);
+                })
+                .detach();
+            }
             SessionRequest::New { prompt, focus } => {
                 let open = self.focused_app().blank_session();
                 // A blank session inherits the focused tab's model, whose slot
@@ -1452,6 +1494,29 @@ impl<'t> EventLoop<'t> {
             cost: app.state.cost,
         };
         json!(snapshot)
+    }
+
+    /// `maki.session.messages`: resolves the target the cheap way, so the
+    /// load and the serialization can run off the loop. No id names the
+    /// focused tab, an id that names no live tab is a stored session, and
+    /// a live one answers from its in-memory transcript, where an
+    /// in-flight turn joins once it completes and its running batch is
+    /// cut so no phantom result reads as a failure.
+    fn resolve_messages_target(
+        &self,
+        id: Option<&str>,
+    ) -> Result<(MakiId, Option<Arc<AppSession>>, bool), String> {
+        let (id, live) = match id.map(parse_session_id).transpose()? {
+            Some(id) => (id, self.position(id)),
+            None => {
+                let idx = self.focused;
+                (self.sessions[idx].app.state.session.id, Some(idx))
+            }
+        };
+        let in_flight =
+            live.is_some_and(|idx| self.sessions[idx].app.status == Status::Streaming);
+        let live = live.map(|idx| Arc::clone(&self.sessions[idx].app.state.session));
+        Ok((id, live, in_flight))
     }
 
     /// The single place that removes a runtime: keeps `focused` pointing at

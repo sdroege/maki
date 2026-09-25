@@ -849,6 +849,14 @@ struct Archive {
     path: PathBuf,
 }
 
+/// One pre-compaction window of a session's log, parsed. `seq` is the number
+/// its `archive/<id>/<seq>.jsonl` filename carries, so ids stay stable while
+/// pruning drops the oldest and leaves gaps.
+pub struct SessionArchive<M, U, T> {
+    pub seq: u64,
+    pub session: Session<M, U, T>,
+}
+
 /// Newest first: the next name comes off the front, pruning walks to the back.
 fn archives_newest_first(archive_dir: &Path) -> Vec<Archive> {
     let Ok(entries) = fs::read_dir(archive_dir) else {
@@ -2081,6 +2089,56 @@ where
         locate_session_file(&dir.path().join(SESSIONS_DIR), id).is_some()
     }
 
+    /// The session's archived pre-compaction windows, oldest first, labeled
+    /// with the sequence numbers their filenames carry. A window that no
+    /// longer parses is skipped with a warning: one unreadable file must not
+    /// hide the rest of the history. Read-only, so it never creates the
+    /// directory it looks in.
+    pub fn archives(id: MakiId, dir: &StateDir) -> Vec<SessionArchive<M, U, T>> {
+        Self::archives_in(id, &dir.path().join(SESSIONS_DIR))
+    }
+
+    pub fn archives_in(id: MakiId, dir: &Path) -> Vec<SessionArchive<M, U, T>> {
+        archives_newest_first(&dir.join(ARCHIVE_DIR).join(id.to_string()))
+            .into_iter()
+            .rev()
+            .filter_map(|archive| match load_session_at(&archive.path) {
+                Ok(session) => Some(SessionArchive {
+                    seq: archive.seq,
+                    session,
+                }),
+                Err(error) => {
+                    warn!(
+                        error = %error,
+                        session_id = %id,
+                        archive = %archive.path.display(),
+                        "skipping unreadable session archive"
+                    );
+                    None
+                }
+            })
+            .collect()
+    }
+
+    /// The seal time of the newest archived window, read from its file mtime
+    /// (an archive is written once, when its window is sealed) without
+    /// parsing anything. Lets `maki.session.messages` date the current
+    /// window of a compacted session without loading the archives. None
+    /// when the session never compacted.
+    pub fn newest_archive_seal_at(id: MakiId, dir: &StateDir) -> Option<u64> {
+        Self::newest_archive_seal_at_in(id, &dir.path().join(SESSIONS_DIR))
+    }
+
+    pub fn newest_archive_seal_at_in(id: MakiId, dir: &Path) -> Option<u64> {
+        archives_newest_first(&dir.join(ARCHIVE_DIR).join(id.to_string()))
+            .into_iter()
+            .next()
+            .and_then(|archive| fs::metadata(&archive.path).ok())
+            .and_then(|meta| meta.modified().ok())
+            .and_then(|sealed| sealed.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|since_epoch| since_epoch.as_secs())
+    }
+
     pub fn load_from(id: MakiId, dir: &Path) -> Result<Self, SessionError> {
         Self::read_from(id, dir, None)
     }
@@ -2232,9 +2290,9 @@ mod tests {
     use super::canonical_key;
     use super::{
         ARCHIVE_DIR, ARCHIVE_KEEP, ARCHIVE_MAX_BYTES, CWD_INDEX_FILE, DEFAULT_TITLE, LOG_BLOATED,
-        MAX_APPENDS, MAX_TITLE_LEN, MSG_PREFIX, SESSION_VERSION, SESSIONS_DIR, StoredSubagent,
-        TAIL_BUF, generate_title, json_path, jsonl_path, load_cwd_index, lock_path, locks_dir,
-        next_epoch, update_cwd_index, write_full_session,
+        MAX_APPENDS, MAX_TITLE_LEN, MSG_PREFIX, SESSION_VERSION, SESSIONS_DIR,
+        StoredSubagent, TAIL_BUF, generate_title, json_path, jsonl_path, load_cwd_index, lock_path,
+        locks_dir, next_epoch, update_cwd_index, write_full_session,
     };
     use super::{
         HistorySnapshot, SCAN_CACHE_FILE, Session, SessionClaim, SessionError, SessionLog,
@@ -3035,6 +3093,72 @@ mod tests {
         TestSession::delete_from(&claim_id(dir, session.id), dir).unwrap();
         assert!(!archive_dir.exists());
         assert!(!jsonl_path(dir, session.id).exists());
+    }
+
+    #[test]
+    fn archives_list_pre_compaction_windows_oldest_first() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let mut session: TestSession = Session::new("model", "/p");
+        session.push_message(user_message("one"));
+        session.push_message(user_message("two"));
+        session.save_to(&claim_for(dir, &session), dir).unwrap();
+        // Shrink rewrite parks the full log under archive/1/.
+        session.replace_messages(vec![user_message("summary")]);
+        session.save_to(&claim_for(dir, &session), dir).unwrap();
+        session.push_message(user_message("later"));
+        session.save_to(&claim_for(dir, &session), dir).unwrap();
+        // Second shrink parks the second window under archive/2/.
+        session.replace_messages(vec![user_message("summary 2")]);
+        session.save_to(&claim_for(dir, &session), dir).unwrap();
+        // A file that is not a window must not hide the ones that are.
+        fs::write(
+            archive_dir_for(dir, session.id).join("3.jsonl"),
+            "CORRUPT\n",
+        )
+        .unwrap();
+
+        let windows = TestSession::archives_in(session.id, dir);
+        let seqs: Vec<u64> = windows.iter().map(|w| w.seq).collect();
+        assert_eq!(seqs, [1, 2]);
+        assert_eq!(windows[0].session.messages().len(), 2);
+        assert_eq!(windows[1].session.messages().len(), 2);
+    }
+
+    #[test]
+    fn newest_archive_seal_at_stats_the_newest_window_without_parsing_it() {
+        use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let mut session: TestSession = Session::new("model", "/p");
+        session.push_message(user_message("one"));
+        session.save_to(&claim_for(dir, &session), dir).unwrap();
+        assert_eq!(
+            TestSession::newest_archive_seal_at_in(session.id, dir),
+            None,
+            "nothing sealed yet"
+        );
+
+        let archive_dir = archive_dir_for(dir, session.id);
+        fs::create_dir_all(&archive_dir).unwrap();
+        let seal = |seq: u64, age: Duration| -> u64 {
+            let path = archive_dir.join(format!("{seq}.jsonl"));
+            fs::write(&path, "CORRUPT\n").unwrap();
+            let mtime = SystemTime::now()
+                .checked_sub(age)
+                .expect("a representable seal time");
+            fs::File::options()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_modified(mtime)
+                .unwrap();
+            mtime.duration_since(UNIX_EPOCH).unwrap().as_secs()
+        };
+        seal(1, Duration::from_secs(5000));
+        let newest = seal(2, Duration::from_secs(100));
+        assert_eq!(TestSession::newest_archive_seal_at_in(session.id, dir), Some(newest));
     }
 
     /// A rename with no new messages must survive restart, while a no-op
