@@ -1287,7 +1287,10 @@ mod tests {
         }
         names.sort();
         assert!(names.contains(&"d".to_owned()));
-        assert!(names.iter().any(|n| n.contains("nested.txt")));
+        assert!(
+            names.contains(&"d/nested.txt".to_owned()),
+            "recursive entries must be relative to the root dir, got {names:?}"
+        );
     }
 
     #[test]
