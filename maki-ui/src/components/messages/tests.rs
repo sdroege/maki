@@ -40,6 +40,8 @@ fn tool_images_survive_snapshot_rebuilds(loaded: bool) {
             source: source.clone(),
             text: CAPTION.into(),
         }),
+        context_size: 0,
+        context_window: 0,
         ..done(TOOL_ID)
     });
     if loaded {
@@ -136,6 +138,8 @@ fn done(id: &str) -> ToolDoneEvent {
         is_error: false,
         annotation: None,
         written_path: None,
+        context_size: 0,
+        context_window: 0,
     }
 }
 
@@ -154,6 +158,8 @@ fn finish_with_live_buf(
     panel.tool_done(ToolDoneEvent {
         call: None,
         is_error,
+        context_size: 0,
+        context_window: 0,
         ..done(id)
     });
     buf
@@ -172,6 +178,8 @@ fn tool_done_updates_start_status(is_error: bool, expected: ToolStatus) {
         is_error,
         annotation: None,
         written_path: None,
+        context_size: 0,
+        context_window: 0,
     });
 
     assert_eq!(panel.messages.len(), 1);
@@ -202,6 +210,8 @@ fn tool_done_sets_annotation(tool: &'static str, output: ToolOutput, expected: O
         is_error: false,
         annotation: None,
         written_path: None,
+        context_size: 0,
+        context_window: 0,
     });
     assert_eq!(panel.messages[0].annotation.as_deref(), expected);
 }
@@ -221,6 +231,8 @@ fn tool_done_annotation_merge(output: &str, expected: Option<&str>) {
         is_error: false,
         annotation: None,
         written_path: None,
+        context_size: 0,
+        context_window: 0,
     });
     assert_eq!(panel.messages[0].annotation.as_deref(), expected);
 }
@@ -248,6 +260,8 @@ fn tool_done_grep_shows_matches() {
         is_error: false,
         annotation: None,
         written_path: None,
+        context_size: 0,
+        context_window: 0,
     });
     let text = &panel.messages[0].text;
     assert!(!text.contains('\n'), "grep body should not be in msg.text");
@@ -351,6 +365,8 @@ fn unknown_tool_id_is_noop() {
         is_error: false,
         annotation: None,
         written_path: None,
+        context_size: 0,
+        context_window: 0,
     });
     assert!(panel.messages.is_empty());
 }
@@ -381,6 +397,8 @@ fn in_progress_tracking() {
         is_error: false,
         annotation: None,
         written_path: None,
+        context_size: 0,
+        context_window: 0,
     });
     assert_eq!(panel.in_progress_count(), 1);
 
@@ -392,6 +410,8 @@ fn in_progress_tracking() {
         is_error: false,
         annotation: None,
         written_path: None,
+        context_size: 0,
+        context_window: 0,
     });
     assert_eq!(panel.in_progress_count(), 0);
 }
@@ -460,6 +480,8 @@ fn events_before_cache_built_render_correctly() {
         is_error: false,
         annotation: None,
         written_path: None,
+        context_size: 0,
+        context_window: 0,
     });
     rebuild(&mut panel);
     assert!(seg_text(&panel, "t1").contains("early output"));
@@ -500,6 +522,8 @@ fn bash_live_output_with_code_input() {
         is_error: false,
         annotation: None,
         written_path: None,
+        context_size: 0,
+        context_window: 0,
     });
     let text = seg_text(&panel, "t1");
     assert!(text.contains("echo hello") && text.contains("done"));
@@ -518,6 +542,8 @@ fn cancel_in_progress_marks_pending_as_error(cache_built: bool) {
         is_error: false,
         annotation: None,
         written_path: None,
+        context_size: 0,
+        context_window: 0,
     });
     if cache_built {
         rebuild(&mut panel);
@@ -615,6 +641,8 @@ fn tick_drains_the_highlight_worker() {
         is_error: false,
         annotation: None,
         written_path: None,
+        context_size: 0,
+        context_window: 0,
     });
     rebuild(&mut panel);
 
@@ -660,6 +688,8 @@ fn tool_done_after_cancel_in_progress_does_not_underflow() {
         is_error: false,
         annotation: None,
         written_path: None,
+        context_size: 0,
+        context_window: 0,
     });
     assert_eq!(panel.in_progress_count(), 0);
     assert_eq!(msg_status(&panel, "t1"), ToolStatus::Success);
@@ -706,6 +736,8 @@ fn search_text_grep_result_includes_structured_output() {
         is_error: false,
         annotation: None,
         written_path: None,
+        context_size: 0,
+        context_window: 0,
     });
     rebuild(&mut panel);
     let text = seg_search(&panel, "t1");
@@ -729,6 +761,8 @@ fn search_text_diff_output_includes_hunks() {
         is_error: false,
         annotation: None,
         written_path: None,
+        context_size: 0,
+        context_window: 0,
     });
     rebuild(&mut panel);
     let text = seg_search(&panel, "t1");
@@ -747,6 +781,8 @@ fn search_text_bash_with_code_input() {
         is_error: false,
         annotation: None,
         written_path: None,
+        context_size: 0,
+        context_window: 0,
     });
     rebuild(&mut panel);
     let text = seg_search(&panel, "t1");
@@ -775,6 +811,8 @@ fn search_text_instruction_segment_indexes_its_own_blocks() {
         is_error: false,
         annotation: None,
         written_path: None,
+        context_size: 0,
+        context_window: 0,
     });
     rebuild(&mut panel);
 
@@ -1182,6 +1220,8 @@ fn panel_with_long_tool(line_count: usize) -> MessagesPanel {
         is_error: false,
         annotation: None,
         written_path: None,
+        context_size: 0,
+        context_window: 0,
     });
     render(&mut panel, 80, 24);
     panel
@@ -1277,6 +1317,8 @@ fn panel_with_grep_tool(match_count: usize) -> MessagesPanel {
         is_error: false,
         annotation: None,
         written_path: None,
+        context_size: 0,
+        context_window: 0,
     });
     render(&mut panel, 80, 24);
     panel
@@ -1349,6 +1391,8 @@ fn search_text_includes_truncated_bash_output() {
         is_error: false,
         annotation: None,
         written_path: None,
+        context_size: 0,
+        context_window: 0,
     });
     rebuild(&mut panel);
     assert!(seg_search(&panel, "t1").contains(&full_output));
@@ -1385,6 +1429,8 @@ fn done_with_instructions(id: &str) -> ToolDoneEvent {
         is_error: false,
         annotation: None,
         written_path: None,
+        context_size: 0,
+        context_window: 0,
     }
 }
 
@@ -1463,6 +1509,8 @@ fn instruction_segment_has_spacer_before_it() {
         is_error: false,
         annotation: None,
         written_path: None,
+        context_size: 0,
+        context_window: 0,
     });
     rebuild(&mut panel);
 
@@ -1497,6 +1545,8 @@ fn toggle_instruction_segment_expands_and_collapses() {
         is_error: false,
         annotation: None,
         written_path: None,
+        context_size: 0,
+        context_window: 0,
     });
     rebuild(&mut panel);
 
@@ -1530,6 +1580,8 @@ fn handle_click_on_done_tool_records_click_row() {
         is_error: false,
         annotation: None,
         written_path: None,
+        context_size: 0,
+        context_window: 0,
     });
     panel.tool_snapshot(
         "t1",
@@ -1592,6 +1644,8 @@ fn tool_done_removes_live_buf_and_snapshots_dirty() {
         is_error: false,
         annotation: None,
         written_path: None,
+        context_size: 0,
+        context_window: 0,
     });
 
     let msg = panel.find_tool_msg_mut("t1").unwrap();
@@ -1903,6 +1957,8 @@ fn tool_done_without_live_buf_preserves_existing_snapshot() {
         is_error: false,
         annotation: None,
         written_path: None,
+        context_size: 0,
+        context_window: 0,
     });
 
     let msg = panel.find_tool_msg_mut("t1").unwrap();
@@ -1927,6 +1983,8 @@ fn tool_done_clean_live_buf_does_not_snapshot() {
         is_error: false,
         annotation: None,
         written_path: None,
+        context_size: 0,
+        context_window: 0,
     });
 
     let msg = panel.find_tool_msg_mut("t1").unwrap();
@@ -1954,6 +2012,8 @@ fn bash_tool_with_snapshot(id: &str) -> MessagesPanel {
         is_error: false,
         annotation: None,
         written_path: None,
+        context_size: 0,
+        context_window: 0,
     });
     panel.tool_snapshot(
         id,
@@ -2518,6 +2578,8 @@ fn resize_reflows_tool_segment_and_keeps_instruction_segment() {
         is_error: false,
         annotation: None,
         written_path: None,
+        context_size: 0,
+        context_window: 0,
     });
     render(&mut panel, 80, 10);
 
@@ -2706,6 +2768,8 @@ fn theme_switch_repaints_highlighted_code() {
         is_error: false,
         annotation: None,
         written_path: None,
+        context_size: 0,
+        context_window: 0,
     });
     render(&mut panel, 80, 20);
     drain_highlight_worker(&mut panel);

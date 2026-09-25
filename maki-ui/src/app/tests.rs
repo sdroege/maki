@@ -533,6 +533,8 @@ fn tool_done_transitions_plan_to_ready(
         is_error: false,
         annotation: None,
         written_path,
+        context_size: 0,
+        context_window: 0,
     }))));
 
     assert_eq!(app.state.plan.is_ready(), expect_ready);
@@ -1600,6 +1602,8 @@ fn tool_lifecycle_events_name_the_session_and_tool() {
         is_error: false,
         annotation: None,
         written_path: None,
+        context_size: 0,
+        context_window: 0,
     }))));
 
     let (event, data) = probe.try_recv_autocmd().expect("ToolDone fired");
@@ -2026,6 +2030,8 @@ pub(crate) fn finish_subagent(app: &mut App, id: &str, is_error: bool) {
         is_error,
         annotation: None,
         written_path: None,
+        context_size: 0,
+        context_window: 0,
     }))));
 }
 
@@ -4292,6 +4298,8 @@ fn search_reaches_output_that_lands_in_an_existing_segment() {
         is_error: false,
         annotation: None,
         written_path: None,
+        context_size: 0,
+        context_window: 0,
     }))));
     rendered(&mut app);
     for c in LATE_TEXT.chars() {
@@ -4831,6 +4839,8 @@ fn plan_app() -> App {
         is_error: false,
         annotation: None,
         written_path: Some("test-plan.md".into()),
+        context_size: 0,
+        context_window: 0,
     }))));
     app
 }
@@ -4853,6 +4863,8 @@ fn tool_done_write_opens_plan_form(mode: Mode, expect_form: bool) {
         is_error: false,
         annotation: None,
         written_path: Some("/tmp/plans/test.md".into()),
+        context_size: 0,
+        context_window: 0,
     }))));
     assert_eq!(app.plan_form.is_visible(), expect_form);
     if expect_form {
@@ -4886,6 +4898,8 @@ fn re_edit_keeps_plan_form_visible() {
         is_error: false,
         annotation: None,
         written_path: Some("test-plan.md".into()),
+        context_size: 0,
+        context_window: 0,
     }))));
     assert!(matches!(app.state.plan, PlanState::Ready(_)));
     assert!(app.plan_form.is_visible());
@@ -4957,6 +4971,8 @@ fn rewrite_plan(app: &mut App) {
         is_error: false,
         annotation: None,
         written_path: Some("test-plan.md".into()),
+        context_size: 0,
+        context_window: 0,
     }))));
 }
 
@@ -7378,6 +7394,8 @@ fn two_tool_results_checkpointed_separately_both_reach_disk() {
             is_error: false,
             annotation: None,
             written_path: None,
+            context_size: 0,
+            context_window: 0,
         }))));
         app.checkpoint();
     }

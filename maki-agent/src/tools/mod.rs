@@ -373,6 +373,13 @@ pub struct ToolContext {
     /// it for its own call only.
     pub live_sink: Option<flume::Sender<ToolLive>>,
     pub model_policy: Arc<ModelPolicy>,
+    /// Context usage of the run this call serves, snapshotted at dispatch
+    /// time (the gauge only moves again once the batch completes). Feeds
+    /// [`ToolDoneEvent::context_size`], so per-call events can warn about a
+    /// filling context mid-turn. `0` when the caller has no gauge.
+    pub context_size: u32,
+    /// The window `context_size` is a share of; `0` when unknown.
+    pub context_window: u32,
 }
 
 /// Live progress of a dispatched child tool, streamed while it runs.
@@ -599,6 +606,8 @@ pub fn interpreter_ctx(
         local_tools: LocalTools::default(),
         live_sink: None,
         model_policy: Arc::new(ModelPolicy::default()),
+        context_size: 0,
+        context_window: 0,
     }
 }
 

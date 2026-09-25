@@ -23,7 +23,11 @@ pub fn dispatch(
 
 /// Subagent envelopes carry the parent's `session_id`, so firing on them too
 /// would double count every budget and every tool the parent already reported,
-/// and a subagent compacting would look like the main context shrank.
+/// and a subagent compacting would look like the main context shrank. The one
+/// exception is `ToolDone`: a listener watching context usage mid-turn wants
+/// the subagent's own tool calls too, and that payload carries the
+/// subagent's own gauge, not the parent's. `data.subagent` says which it is,
+/// so a listener watching the parent's usage can skip the subagent's calls.
 ///
 /// `session_id` stays a `Display` because this runs on every envelope, streaming
 /// deltas included, and almost all of them map to nothing. Only the arms that
@@ -33,7 +37,7 @@ pub fn autocmd_for(
     session_id: &dyn Display,
     subagent_bounded: bool,
 ) -> Option<(&'static str, Value)> {
-    if subagent_bounded {
+    if subagent_bounded && !matches!(event, AgentEvent::ToolDone(_)) {
         return None;
     }
     let sid = || Value::String(session_id.to_string());
@@ -49,6 +53,9 @@ pub fn autocmd_for(
                 "tool": e.tool,
                 "is_error": e.is_error,
                 "bytes": e.output.as_text().len(),
+                "context_size": e.context_size,
+                "context_window": e.context_window,
+                "subagent": subagent_bounded,
             });
             if let Some(call) = &e.call {
                 data["input"] = call.input.clone();
@@ -165,6 +172,8 @@ mod tests {
             is_error: false,
             annotation: None,
             written_path: None,
+            context_size: 0,
+            context_window: 0,
             call: Some(Box::new(CallRecord {
                 input: json!({ "command": TOOL_COMMAND }),
                 duration: Duration::from_millis(TOOL_MILLIS),
@@ -248,12 +257,37 @@ mod tests {
     }
 
     #[test]
-    fn subagent_envelopes_fire_nothing() {
+    fn tool_done_carries_the_run_context() {
+        let event = every_event()
+            .into_iter()
+            .find_map(|e| match e {
+                AgentEvent::ToolDone(done) => Some(*done),
+                _ => None,
+            })
+            .unwrap();
+        let mut stamped = event.clone();
+        stamped.context_size = 150_000;
+        stamped.context_window = 200_000;
+        let (_, data) = autocmd_for(&AgentEvent::ToolDone(Box::new(stamped)), &SESSION, false)
+            .expect("ToolDone fires");
+        assert_eq!(data["context_size"], 150_000);
+        assert_eq!(data["context_window"], 200_000);
+        assert_eq!(data["subagent"], false);
+    }
+
+    #[test]
+    fn subagent_envelopes_fire_only_tool_done() {
         for event in every_event() {
-            assert!(
-                autocmd_for(&event, &SESSION, true).is_none(),
+            let expected = matches!(event, AgentEvent::ToolDone(_));
+            let fired = autocmd_for(&event, &SESSION, true);
+            assert_eq!(
+                fired.is_some(),
+                expected,
                 "{event:?} leaked from a subagent"
             );
+            if let Some((_, data)) = fired {
+                assert_eq!(data["subagent"], true, "{event:?} is not a subagent event");
+            }
         }
     }
 }

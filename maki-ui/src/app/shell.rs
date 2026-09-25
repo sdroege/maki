@@ -156,6 +156,8 @@ impl App {
                     is_error,
                     annotation: None,
                     written_path: None,
+                    context_size: 0,
+                    context_window: 0,
                 });
                 if let Some(msg) = result_msg {
                     self.shell.push_result(msg);

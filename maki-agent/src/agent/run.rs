@@ -941,6 +941,8 @@ impl<'h> Agent<'h> {
             local_tools: Arc::clone(&self.local_tools),
             live_sink: None,
             model_policy: Arc::clone(&self.model_policy),
+            context_size: self.gauge.size(),
+            context_window: self.model.context_window,
         }
     }
 
@@ -2368,6 +2370,45 @@ mod tests {
                 })
                 .collect();
             assert_eq!(reported, vec![expected, expected], "{ONE_GAUGE_MSG}");
+        });
+    }
+
+    /// `ToolDone` carries the same gauge reading the turn-level events
+    /// report, snapshotted at dispatch time, so a listener watching context
+    /// usage mid-turn sees the same number the compaction trigger will.
+    #[test]
+    fn tool_done_reports_the_dispatch_time_gauge() {
+        smol::block_on(async {
+            let mut tool_turn = assistant_response(vec![ContentBlock::tool_use(
+                "t1",
+                "no_such_tool",
+                serde_json::json!({}),
+            )]);
+            tool_turn.usage = TokenUsage {
+                input: 1_000,
+                cache_read: 250,
+                cache_creation: 50,
+                ..Default::default()
+            };
+            let expected = tool_turn.usage.total_input();
+            let mut history = History::new(vec![Message::user("go".into())]);
+            let (mut agent, event_rx) = make_agent(
+                MockProvider::new(vec![tool_turn, text_response(StopReason::EndTurn)]),
+                &mut history,
+            );
+            agent.run(default_input()).await.unwrap();
+            drop(agent);
+
+            let events = drain_events(&event_rx);
+            let done = events
+                .iter()
+                .find_map(|e| match &e.event {
+                    AgentEvent::ToolDone(done) => Some(done.as_ref()),
+                    _ => None,
+                })
+                .expect("the tool call fired a ToolDone");
+            assert_eq!(done.context_size, expected, "{ONE_GAUGE_MSG}");
+            assert_eq!(done.context_window, default_model().context_window);
         });
     }
 

@@ -953,6 +953,8 @@ mod tests {
             is_error: false,
             annotation: None,
             written_path,
+            context_size: 0,
+            context_window: 0,
         }))
     }
 

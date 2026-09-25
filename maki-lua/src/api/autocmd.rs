@@ -159,11 +159,18 @@ fn parse_string_or_seq(value: Value, what: &str) -> LuaResult<Vec<String>> {
 /// `"SessionEnd"` that is the session being left behind, the other events
 /// name the session now running or focused. What each event adds:
 ///
-/// - `"ToolStart"`, `"ToolDone"`: `data.tool_id` and `data.tool`.
-/// - `"ToolDone"` adds `data.is_error` and `data.bytes`, the size of the
+/// - `"ToolStart"`: `data.tool_id` and `data.tool`.
+/// - `"ToolDone"`: `data.is_error` and `data.bytes`, the size of the
 ///   text the model reads. A call that ran also carries `data.duration_ms`
 ///   and `data.input`, the input after every `tool.*.input` layer. A call
-///   that never ran, like a cancelled one, has neither.
+///   that never ran, like a cancelled one, has neither. `data.context_size`
+///   with `data.context_window`, the context usage of the run the tool
+///   served when it was dispatched (a window of 0 means no run to ask, so
+///   guard any division against it). Mid-turn, before `"AutoCompacting"`
+///   fires, so a plugin can nudge the model while there is still room to
+///   act. Fires for subagent tool calls too, with `data.subagent` true and
+///   the subagent's own usage, which says nothing about the parent
+///   session's context.
 /// - `"TurnStart"`: `data.text`, the message that started the turn.
 /// - `"TurnEnd"`: `data.reason` (`"finished"`, `"max_tokens"`,
 ///   `"max_turns"`, `"cancelled"`, or `"dropped"` when an
@@ -219,7 +226,9 @@ fn parse_string_or_seq(value: Value, what: &str) -> LuaResult<Vec<String>> {
 ///   again only ever re-reads the root the plugin passed.
 ///
 /// `"TurnEnd"` fires once per turn and only for the main session, so
-/// subagent turns never show up. A manual `/compact` ends its run without
+/// subagent turns never show up. The same boundedness applies to every
+/// subagent envelope except `"ToolDone"`, which fires for subagent tool
+/// calls too. A manual `/compact` ends its run without
 /// ending a turn, so it stays quiet too.
 ///
 /// Drivers are not all caught up. `"TurnStart"` and `"PlanReady"` come from
