@@ -378,6 +378,11 @@ impl<'h> Agent<'h> {
         };
         if let Some(mailbox) = &self.mailbox {
             for message in mailbox.drain() {
+                if let Some(text) = message.observation_display_text() {
+                    self.event_tx.send(AgentEvent::Notice {
+                        text: text.to_owned(),
+                    })?;
+                }
                 self.history.push(message);
             }
         }
@@ -1414,7 +1419,7 @@ mod tests {
         smol::block_on(async {
             let id = maki_storage::id::MakiId::generate();
             let mailbox = SessionMailbox::register(id);
-            SessionMailbox::notify(id, "mailbox".into(), false).unwrap();
+            SessionMailbox::notify(id, "mailbox".into(), None, false).unwrap();
             let mut history = History::new(Vec::new());
             let (mut agent, _event_rx) = make_agent(
                 MockProvider::new(vec![text_response(StopReason::EndTurn)]),
@@ -1438,7 +1443,7 @@ mod tests {
         smol::block_on(async {
             let id = maki_storage::id::MakiId::generate();
             let mailbox = SessionMailbox::register(id);
-            SessionMailbox::notify(id, "mailbox".into(), false).unwrap();
+            SessionMailbox::notify(id, "mailbox".into(), None, false).unwrap();
             let mut input = default_input();
             input.preamble = vec![Message::observation("preamble".into())];
             let source = MockInterruptSource::new(vec![ExtractedCommand::Interrupt(vec![input])]);
@@ -1466,7 +1471,7 @@ mod tests {
         smol::block_on(async {
             let id = maki_storage::id::MakiId::generate();
             let mailbox = SessionMailbox::register(id);
-            SessionMailbox::notify(id, "failed".into(), true).unwrap();
+            SessionMailbox::notify(id, "failed".into(), None, true).unwrap();
             let mut history = History::new(Vec::new());
             let (mut agent, _event_rx) = make_agent(
                 MockProvider::new(vec![text_response(StopReason::EndTurn)]),

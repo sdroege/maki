@@ -420,6 +420,26 @@ impl Message {
         !self.kind.is_turn()
     }
 
+    /// An observation the transcript also shows the user, between the
+    /// messages, in the order the model received it. `display` is what the
+    /// transcript renders; providers read the content blocks, never the
+    /// `display_text`, so the model still sees `text`.
+    pub fn observation_displayed(text: String, display: String) -> Self {
+        Self {
+            display_text: Some(display),
+            ..Self::observation(text)
+        }
+    }
+
+    /// The text the transcript shows for this observation, `None` when the
+    /// observation stays model-only.
+    pub fn observation_display_text(&self) -> Option<&str> {
+        if !self.is_observation() {
+            return None;
+        }
+        self.display_text.as_deref().filter(|t| !t.is_empty())
+    }
+
     pub fn user(text: String) -> Self {
         Self {
             role: Role::User,

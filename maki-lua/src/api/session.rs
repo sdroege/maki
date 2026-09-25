@@ -26,6 +26,8 @@ const BLANK_NOTIFY_ERR: &str = "text must not be blank";
 const SESSION_REQUIRED_ERR: &str = "session is required";
 const NOT_LIVE_ERR: &str = "session not live";
 const NO_FOCUSED_ERR: &str = "no focused session";
+const DISPLAY_TYPE_ERR: &str = "display must be a boolean or a string";
+const BLANK_DISPLAY_ERR: &str = "display text must not be blank";
 
 async fn roundtrip(
     lua: Lua,
@@ -389,9 +391,15 @@ async fn prompt(
 /// @param opts table Options:
 ///   `session` (string) id of a live session.
 ///   `wake` (boolean) start a TUI turn when it next becomes idle (default false).
+///   `display` (boolean|string) echo the notice into the transcript between
+///   the messages, so the user sees what the model was told. `true` shows
+///   {text}; a string shows that text instead and must not be blank (the
+///   empty string is reserved for synthetic messages, default false,
+///   model-only).
 /// @return (boolean|nil, string|nil) true, or nil and an error.
 /// @example
 /// maki.session.notify("[monitor] deploy failed", { session = id, wake = true })
+/// maki.session.notify("context is nearly full", { session = id, wake = true, display = true })
 #[lua_fn]
 fn notify(_lua: &Lua, text: String, opts: Option<Table>) -> LuaResult<Pair<bool>> {
     if text.trim().is_empty() {
@@ -408,7 +416,19 @@ fn notify(_lua: &Lua, text: String, opts: Option<Table>) -> LuaResult<Pair<bool>
         Err(error) => return Ok(err_pair(error)),
     };
     let wake = opts.get("wake").unwrap_or(false);
-    if let Err(error) = SessionMailbox::notify(session_id, text, wake) {
+    let display = match opts.get::<Option<Value>>("display")? {
+        Some(Value::Boolean(true)) => Some(text.clone()),
+        Some(Value::String(display)) => {
+            let display = display.to_str()?.to_owned();
+            if display.trim().is_empty() {
+                return Ok(err_pair(BLANK_DISPLAY_ERR));
+            }
+            Some(display)
+        }
+        Some(Value::Boolean(false)) | None => None,
+        Some(_) => return Ok(err_pair(DISPLAY_TYPE_ERR)),
+    };
+    if let Err(error) = SessionMailbox::notify(session_id, text, display, wake) {
         return Ok(err_pair(error));
     }
     Ok((Some(true), None))
@@ -657,6 +677,67 @@ mod tests {
         assert!(value);
         assert_eq!(error, None);
         assert_eq!(mailbox.claim_wake().len(), 1);
+    }
+
+    #[test]
+    fn display_option_marks_the_observation_for_the_transcript() {
+        let id = MakiId::generate();
+        let mailbox = SessionMailbox::register(id);
+        let lua = lua_with_session(None);
+        lua.globals().set("session_id", id.to_string()).unwrap();
+
+        let code = "return session.notify('context is nearly full', {
+            session = session_id,
+            display = true,
+        })";
+        let (value, error): (bool, Option<String>) = lua.load(code).eval().unwrap();
+        assert!(value);
+        assert_eq!(error, None);
+
+        let code = "return session.notify('retry', {
+            session = session_id,
+            display = 'retrying in the transcript',
+        })";
+        let (value, error): (bool, Option<String>) = lua.load(code).eval().unwrap();
+        assert!(value);
+        assert_eq!(error, None);
+
+        let messages = mailbox.drain();
+        assert_eq!(
+            messages[0].observation_display_text(),
+            Some("context is nearly full")
+        );
+        assert_eq!(
+            messages[0].first_text_content(),
+            Some("context is nearly full")
+        );
+        assert_eq!(
+            messages[1].observation_display_text(),
+            Some("retrying in the transcript")
+        );
+        // The model still sees the reported text; providers read content
+        // blocks, and `user_text()` would answer the display text here.
+        assert_eq!(messages[1].first_text_content(), Some("retry"));
+    }
+
+    #[test]
+    fn display_option_rejects_other_types_and_blank_strings() {
+        let id = MakiId::generate();
+        SessionMailbox::register(id);
+        let lua = lua_with_session(None);
+        lua.globals().set("session_id", id.to_string()).unwrap();
+
+        let (_, error): (bool, Option<String>) = lua
+            .load("return session.notify('built', { session = session_id, display = 1 })")
+            .eval()
+            .unwrap();
+        assert_eq!(error.as_deref(), Some(DISPLAY_TYPE_ERR));
+
+        let (_, blank): (bool, Option<String>) = lua
+            .load("return session.notify('built', { session = session_id, display = ' ' })")
+            .eval()
+            .unwrap();
+        assert_eq!(blank.as_deref(), Some(BLANK_DISPLAY_ERR));
     }
 
     #[test]

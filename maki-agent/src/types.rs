@@ -718,7 +718,8 @@ pub enum AgentEvent {
     Nudge,
     /// One line for the user about something the host did that the transcript
     /// won't show, like telling the model the date changed or rebuilding the
-    /// prompt.
+    /// prompt, or an observation with a `display_text` that reached the model
+    /// and should show between the messages.
     Notice {
         text: String,
     },

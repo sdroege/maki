@@ -42,7 +42,16 @@ impl SessionMailbox {
         Self { session_id, state }
     }
 
-    pub fn notify(session_id: MakiId, text: String, wake: bool) -> Result<(), MailboxError> {
+    /// Queues {text} as an observation for the session's next agent run.
+    /// `display` is echoed into the transcript between the messages, so the
+    /// user sees what the model was told; `None` keeps the observation
+    /// model-only.
+    pub fn notify(
+        session_id: MakiId,
+        text: String,
+        display: Option<String>,
+        wake: bool,
+    ) -> Result<(), MailboxError> {
         let mailbox = {
             let mut mailboxes = lock(&MAILBOXES);
             let Some(state) = mailboxes.get(&session_id).and_then(Weak::upgrade) else {
@@ -51,11 +60,15 @@ impl SessionMailbox {
             };
             Self { session_id, state }
         };
+        let message = match display {
+            Some(display) => Message::observation_displayed(text, display),
+            None => Message::observation(text),
+        };
         let mut state = lock(&mailbox.state);
         if state.pending.len() == MAILBOX_CAPACITY {
             state.pending.pop_front();
         }
-        state.pending.push_back(Message::observation(text));
+        state.pending.push_back(message);
         state.wake |= wake;
         Ok(())
     }
@@ -105,8 +118,8 @@ mod tests {
     fn notifications_drain_in_order_and_clear_wake() {
         let id = MakiId::generate();
         let mailbox = SessionMailbox::register(id);
-        SessionMailbox::notify(id, "first".into(), true).unwrap();
-        SessionMailbox::notify(id, "second".into(), true).unwrap();
+        SessionMailbox::notify(id, "first".into(), None, true).unwrap();
+        SessionMailbox::notify(id, "second".into(), None, true).unwrap();
 
         let messages = mailbox.drain();
         assert_eq!(
@@ -121,18 +134,40 @@ mod tests {
     fn quiet_notifications_do_not_claim_a_wake() {
         let id = MakiId::generate();
         let mailbox = SessionMailbox::register(id);
-        SessionMailbox::notify(id, "built".into(), false).unwrap();
+        SessionMailbox::notify(id, "built".into(), None, false).unwrap();
 
         assert!(mailbox.claim_wake().is_empty());
         assert_eq!(mailbox.drain().len(), 1);
     }
 
     #[test]
+    fn displayed_notifications_carry_transcript_text() {
+        let id = MakiId::generate();
+        let mailbox = SessionMailbox::register(id);
+        SessionMailbox::notify(id, "first".into(), None, false).unwrap();
+        SessionMailbox::notify(
+            id,
+            "context is nearly full".into(),
+            Some("context is nearly full".into()),
+            false,
+        )
+        .unwrap();
+
+        let messages = mailbox.drain();
+        assert_eq!(messages[0].observation_display_text(), None);
+        assert_eq!(
+            messages[1].observation_display_text(),
+            Some("context is nearly full")
+        );
+        assert_eq!(text(&messages[1]), "context is nearly full");
+    }
+
+    #[test]
     fn waking_notification_claims_all_pending_messages() {
         let id = MakiId::generate();
         let mailbox = SessionMailbox::register(id);
-        SessionMailbox::notify(id, "quiet".into(), false).unwrap();
-        SessionMailbox::notify(id, "wake".into(), true).unwrap();
+        SessionMailbox::notify(id, "quiet".into(), None, false).unwrap();
+        SessionMailbox::notify(id, "wake".into(), None, true).unwrap();
 
         let messages = mailbox.claim_wake();
         assert_eq!(
@@ -147,7 +182,7 @@ mod tests {
         let id = MakiId::generate();
         let mailbox = SessionMailbox::register(id);
         for index in 0..=MAILBOX_CAPACITY {
-            SessionMailbox::notify(id, index.to_string(), false).unwrap();
+            SessionMailbox::notify(id, index.to_string(), None, false).unwrap();
         }
 
         let messages = mailbox.drain();
@@ -161,7 +196,7 @@ mod tests {
         let id = MakiId::generate();
         let first = SessionMailbox::register(id);
         let second = SessionMailbox::register(id);
-        SessionMailbox::notify(id, "built".into(), false).unwrap();
+        SessionMailbox::notify(id, "built".into(), None, false).unwrap();
 
         assert_eq!(second.drain().len(), 1);
         assert!(first.drain().is_empty());
@@ -173,7 +208,7 @@ mod tests {
         drop(SessionMailbox::register(id));
 
         assert!(!lock(&MAILBOXES).contains_key(&id));
-        assert!(SessionMailbox::notify(id, "late".into(), false).is_err());
+        assert!(SessionMailbox::notify(id, "late".into(), None, false).is_err());
     }
 
     #[test]
@@ -185,7 +220,7 @@ mod tests {
         drop(first);
 
         assert!(lock(&MAILBOXES).contains_key(&id));
-        SessionMailbox::notify(id, "built".into(), false).unwrap();
+        SessionMailbox::notify(id, "built".into(), None, false).unwrap();
         assert_eq!(second.drain().len(), 1);
     }
 
@@ -200,7 +235,7 @@ mod tests {
         lock(&MAILBOXES).insert(id, Arc::downgrade(&replacement.state));
 
         drop(stale);
-        SessionMailbox::notify(id, "built".into(), false).unwrap();
+        SessionMailbox::notify(id, "built".into(), None, false).unwrap();
 
         assert_eq!(replacement.drain().len(), 1);
     }
@@ -210,7 +245,7 @@ mod tests {
         let legacy: MakiId = "01965087-4c71-7f00-8000-000000000001".parse().unwrap();
         let canonical: MakiId = legacy.to_string().parse().unwrap();
         let mailbox = SessionMailbox::register(legacy);
-        SessionMailbox::notify(canonical, "built".into(), false).unwrap();
+        SessionMailbox::notify(canonical, "built".into(), None, false).unwrap();
 
         assert_eq!(mailbox.drain().len(), 1);
     }

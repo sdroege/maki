@@ -565,6 +565,12 @@ pub fn history_to_display(
             continue;
         }
         if msg.is_observation() {
+            // Display-less observations stay model-only; a `display_text`
+            // asks for a transcript line, so the user sees what the host
+            // told the model and when.
+            if let Some(text) = msg.observation_display_text() {
+                display.push(DisplayMessage::new(DisplayRole::Assistant, text.to_owned()));
+            }
             continue;
         }
         match msg.role {
@@ -1139,6 +1145,34 @@ mod tests {
             .map(|d| (d.role.clone(), d.text.as_str()))
             .collect();
         assert_eq!(shown, expected);
+    }
+
+    #[test]
+    fn history_shows_displayed_observations_between_the_messages() {
+        let msgs = vec![
+            Message {
+                role: Role::User,
+                content: vec![ContentBlock::Text {
+                    text: "run the tests".into(),
+                }],
+                ..Default::default()
+            },
+            Message::observation_displayed(
+                "context is nearly full".into(),
+                "context is nearly full".into(),
+            ),
+            Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::Text {
+                    text: "saving state to notes".into(),
+                }],
+                ..Default::default()
+            },
+        ];
+        let display = history_to_display(&msgs, &empty_outputs(), &ToolOutputLines::default()).0;
+        assert_eq!(display.len(), 3);
+        assert_eq!(display[1].role, DisplayRole::Assistant);
+        assert_eq!(display[1].text, "context is nearly full");
     }
 
     fn tool_use_pair(
