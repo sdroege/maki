@@ -307,6 +307,7 @@ pub fn run(params: PrintParams) -> Result<()> {
             | AgentEvent::ToolDone(_)
             | AgentEvent::QueueItemConsumed { .. }
             | AgentEvent::QueueDrained
+            | AgentEvent::Notice { .. }
             | AgentEvent::AutoCompacting { .. }
             | AgentEvent::CompactionDone { .. }
             | AgentEvent::AuthRequired
@@ -317,7 +318,6 @@ pub fn run(params: PrintParams) -> Result<()> {
             | AgentEvent::ToolHeaderSnapshot { .. }
             | AgentEvent::LiveToolBuf { .. }
             | AgentEvent::Nudge
-            | AgentEvent::Notice { .. }
             | AgentEvent::PromptProgress { .. }
             | AgentEvent::StreamClosed => {}
             AgentEvent::Steered { .. } => {
