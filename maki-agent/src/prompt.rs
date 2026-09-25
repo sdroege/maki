@@ -106,6 +106,11 @@ pub enum PromptId {
     System,
     Research,
     General,
+    /// No template and no slots of its own: entries are gathered across all
+    /// slots and appended to the compaction summary prompt as extra
+    /// instructions. Never in [`PromptId::ALL`], so it only collects when a
+    /// hint names `prompt = "compact"` explicitly.
+    Compact,
 }
 
 impl PromptId {
@@ -144,6 +149,7 @@ impl PromptId {
             PromptId::System => SYSTEM_PROMPT,
             PromptId::Research => RESEARCH_PROMPT,
             PromptId::General => GENERAL_PROMPT,
+            PromptId::Compact => "",
         }
     }
 
@@ -200,6 +206,20 @@ pub fn assemble(id: PromptId, slots: &ResolvedSlots, instructions: &str) -> Stri
         out = fill_marker(&out, slot.marker(), &render_slot(slots, id, slot));
     }
     out.replace(INSTRUCTIONS_MARKER, instructions)
+}
+
+/// Every `prompt = "compact"` entry a run's plugins registered, gathered
+/// across all slots in slot order. Compaction appends this to the summary
+/// prompt's extra instructions: a hint naming the files that survive
+/// compaction lands right where the recovering model needs them.
+pub fn compact_hints(slots: &ResolvedSlots) -> String {
+    let mut parts = Vec::new();
+    for slot in Slot::iter() {
+        for entry in slots.get(PromptId::Compact, slot) {
+            parts.push(entry.content.as_str());
+        }
+    }
+    parts.join("\n")
 }
 
 /// Replace a slot marker with its content. When the content is empty, also drop
@@ -347,6 +367,24 @@ mod tests {
         let out = assemble(PromptId::Research, &s, "");
         assert!(!out.contains("DROPPED"));
         assert!(out.contains(&format!("{NATIVE_EFFICIENT_LINE}, EXTRA.")));
+    }
+
+    /// Compact entries ride no template, so the gather is what makes them
+    /// visible: everything registered under `prompt = "compact"`, across all
+    /// slots, and nothing else.
+    #[test]
+    fn compact_hints_gathers_across_slots_in_slot_order() {
+        let mut s = ResolvedSlots::default();
+        let entry = |content: &str| SlotEntry {
+            plugin: Arc::from("p"),
+            content: content.into(),
+        };
+        s.insert(PromptId::Compact, Slot::Conventions, entry("SECOND"));
+        s.insert(PromptId::Compact, Slot::ToolUsage, entry("FIRST"));
+        s.insert(PromptId::System, Slot::ToolUsage, entry("NEVER"));
+
+        assert_eq!(compact_hints(&s), "FIRST\nSECOND");
+        assert_eq!(compact_hints(&ResolvedSlots::default()), "");
     }
 
     #[test_case(PromptId::System, Slot::ToolUsage, true ; "system_tool_usage")]

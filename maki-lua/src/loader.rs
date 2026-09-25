@@ -1149,9 +1149,14 @@ impl EventHandle {
         });
     }
 
+    /// For prompt builds that name no session (startup, headless
+    /// one-shots): content callbacks get nil as their context.
     pub fn collect_prompt_slots(&self) -> ResolvedSlots {
         let (tx, rx) = flume::bounded(1);
-        let _ = self.tx.send(Request::CollectPromptSlots { reply: tx });
+        let _ = self.tx.send(Request::CollectPromptSlots {
+            session: None,
+            reply: tx,
+        });
         rx.recv().unwrap_or_default()
     }
 
@@ -1169,9 +1174,14 @@ impl EventHandle {
         Ok(crate::pack::PackContext::new(declared, installed, active))
     }
 
-    pub async fn collect_prompt_slots_async(&self) -> ResolvedSlots {
+    /// `session` names the session whose prompt is being built, so content
+    /// callbacks can tell it apart from the focused tab.
+    pub async fn collect_prompt_slots_async(&self, session: Option<&str>) -> ResolvedSlots {
         let (tx, rx) = flume::bounded(1);
-        let _ = self.tx.send(Request::CollectPromptSlots { reply: tx });
+        let _ = self.tx.send(Request::CollectPromptSlots {
+            session: session.map(str::to_owned),
+            reply: tx,
+        });
         rx.recv_async().await.unwrap_or_default()
     }
 
@@ -1922,6 +1932,64 @@ mod tests {
         );
         assert!(r.is_err());
         assert!(r.unwrap_err().to_string().contains("not available"));
+    }
+
+    /// Compact owns no template slots, so no slot-prompt combination is
+    /// incompatible: the entry is gathered across all slots instead.
+    #[test]
+    fn compact_prompt_hint_needs_no_slot_and_gathers() {
+        let (_host, slots) = slots_from(
+            "compact_hint",
+            r#"
+            maki.api.register_prompt_hint({
+                slot = "tool_usage",
+                prompt = "compact",
+                content = "list the note filenames",
+            })
+            "#,
+        );
+        assert_eq!(
+            contents(&slots, PromptId::Compact, Slot::ToolUsage),
+            ["list the note filenames"]
+        );
+        assert_eq!(
+            maki_agent::prompt::compact_hints(&slots),
+            "list the note filenames"
+        );
+        assert!(contents(&slots, PromptId::System, Slot::ToolUsage).is_empty());
+    }
+
+    /// `maki.session.current()` names the focused tab, so the session a
+    /// background prompt is being built for arrives as the callback's
+    /// context instead.
+    #[test]
+    fn hint_callback_names_the_prompt_session() {
+        let host = PluginHost::new(Arc::new(ToolRegistry::new())).unwrap();
+        host.load_source(
+            "sid",
+            r#"
+            maki.api.register_prompt_hint({
+                slot = "tool_usage",
+                content = function(ctx)
+                    return ctx and ctx.session_id or "no session"
+                end,
+            })
+            "#,
+        )
+        .unwrap();
+        let named = smol::block_on(
+            host.event_handle()
+                .collect_prompt_slots_async(Some("session-x")),
+        );
+        assert_eq!(
+            contents(&named, PromptId::System, Slot::ToolUsage),
+            ["session-x"]
+        );
+        let unnamed = host.event_handle().collect_prompt_slots();
+        assert_eq!(
+            contents(&unnamed, PromptId::System, Slot::ToolUsage),
+            ["no session"]
+        );
     }
 
     #[test]

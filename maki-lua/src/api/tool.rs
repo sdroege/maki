@@ -610,7 +610,9 @@ fn validate_slot_prompt_compatibility(
 ) -> LuaResult<()> {
     if let Some(prompts) = prompts {
         for &pid in prompts {
-            if !pid.has_slot(slot) {
+            // Compact has no template, so it owns no slots; its entries are
+            // gathered across all of them instead.
+            if pid != PromptId::Compact && !pid.has_slot(slot) {
                 return Err(mlua::Error::runtime(format!(
                     "slot '{}' is not available for prompt '{}'",
                     slot, pid
@@ -979,8 +981,26 @@ async fn run_command(
 ///
 /// @param spec table Hint specification:
 ///   slot    (string)         Required. Aggregate slot name (e.g. "tool_usage", "general").
-///   content (string|function) Required. Static text, or a `function()` that returns a string. Max 1 MiB.
-///   prompt  (string|string[]) Optional. Restrict to specific prompt ids (e.g. "system").
+///                            For `prompt = "compact"` entries no template has
+///                            to contain it: entries are gathered across all
+///                            slots, and the slot only positions the entry in
+///                            the gathered order.
+///   content (string|function) Required. Static text, or a `function(ctx)` that
+///                            returns a string. Max 1 MiB. `ctx` is
+///                            `{ session_id = "..." }` naming the session whose
+///                            prompt is being built, or nil when there is no
+///                            session to name (startup, headless one-shots,
+///                            ACP clients).
+///   prompt  (string|string[]) Optional. Restrict to specific prompt ids
+///                            (e.g. "system", "compact"). "compact" entries
+///                            are appended to the compaction summary prompt
+///                            as extra instructions instead of a template.
+///                            They resolve with the run's other prompt
+///                            slots, so nothing caches them across turns:
+///                            auto-compaction sees them as of the start of
+///                            the run, a manual /compact as of the moment it
+///                            was requested. ACP clients are the exception:
+///                            they resolve all hints once at startup.
 /// @return
 /// @example
 /// maki.api.register_prompt_hint({
@@ -1025,7 +1045,8 @@ fn register_prompt_hint(lua: &Lua, #[ctx] plugin: Arc<str>, spec: Table) -> LuaR
 ///
 /// @param spec table Spec fields mirror `register_prompt_hint`:
 ///   slot    (string)         Required. Singleton slot name (e.g. "identity", "tone").
-///   content (string|function) Required. Static text or a `function()` returning a string. Max 1 MiB.
+///   content (string|function) Required. Static text or a `function(ctx)` returning a
+///                            string. Max 1 MiB. `ctx` as in `register_prompt_hint`.
 ///   prompt  (string|string[]) Optional. Restrict to specific prompt ids.
 /// @return
 /// @example

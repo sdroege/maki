@@ -448,7 +448,11 @@ pub enum Request {
         /// [`TaskCell::command_depth`] so an alias cycle terminates.
         depth: u8,
     },
+    /// The session whose prompt is being built, when there is one: content
+    /// callbacks receive it, because `maki.session.current()` names the
+    /// focused tab and a background session builds prompts too.
     CollectPromptSlots {
+        session: Option<String>,
         reply: flume::Sender<ResolvedSlots>,
     },
     CollectPluginOptions {
@@ -2783,10 +2787,27 @@ impl LuaRuntime {
         revision_guard
     }
 
-    async fn run_hint_callback(&self, plugin: &str, func: Function) -> Option<String> {
+    /// Content callbacks get the session whose prompt is being built, since
+    /// `maki.session.current()` names the focused tab and a background
+    /// session builds prompts too. No session to name hands the callback
+    /// nil instead.
+    async fn run_hint_callback(
+        &self,
+        plugin: &str,
+        func: Function,
+        session: Option<&str>,
+    ) -> Option<String> {
+        let ctx = match session {
+            Some(id) => {
+                let table = self.lua.create_table().ok()?;
+                table.set("session_id", id).ok()?;
+                LuaValue::Table(table)
+            }
+            None => LuaValue::Nil,
+        };
         let result: mlua::Result<LuaValue> = run_detached(&self.lua, async {
             let thread = self.lua.create_thread(func)?;
-            thread.into_async::<LuaValue>(())?.await
+            thread.into_async::<LuaValue>(ctx)?.await
         })
         .await;
         match result {
@@ -2803,7 +2824,7 @@ impl LuaRuntime {
         }
     }
 
-    async fn collect_prompt_slots(&self) -> ResolvedSlots {
+    async fn collect_prompt_slots(&self, session: Option<&str>) -> ResolvedSlots {
         struct Pending {
             plugin: Arc<str>,
             prompts: Option<Vec<PromptId>>,
@@ -2847,12 +2868,16 @@ impl LuaRuntime {
         for item in pending {
             let content = match item.content {
                 PendingContent::Static(s) => Some(s),
-                PendingContent::Callback(func) => self.run_hint_callback(&item.plugin, func).await,
+                PendingContent::Callback(func) => {
+                    self.run_hint_callback(&item.plugin, func, session).await
+                }
             };
             let Some(content) = content else { continue };
             let explicit = item.prompts.is_some();
             for &pid in item.prompts.as_deref().unwrap_or(PromptId::ALL) {
-                if !pid.has_slot(item.slot) {
+                // Compact has no template, so it owns no slots; its entries
+                // are gathered across all of them instead.
+                if pid != PromptId::Compact && !pid.has_slot(item.slot) {
                     if explicit {
                         tracing::warn!(
                             plugin = %item.plugin,
@@ -4647,8 +4672,8 @@ pub fn spawn(
                             let res = rt.run_init_lua(&source, scope, plugin_dir).await;
                             let _ = reply.send(res);
                         }
-                        Request::CollectPromptSlots { reply } => {
-                            let slots = rt.collect_prompt_slots().await;
+                        Request::CollectPromptSlots { session, reply } => {
+                            let slots = rt.collect_prompt_slots(session.as_deref()).await;
                             let _ = reply.send(slots);
                         }
                         Request::CollectPluginOptions { reply } => {
