@@ -1112,6 +1112,7 @@ impl<'h> Agent<'h> {
             &self.model_policy,
         )
         .await;
+        let compact_hints = crate::prompt::compact_hints(&self.prompt_slots);
         // Built from the fields, not `self.hooks()`, which would borrow all of
         // `self` while `history` is lent out mutably.
         let hooks = AgentHooks {
@@ -1134,6 +1135,7 @@ impl<'h> Agent<'h> {
             &hooks,
             &self.config,
             instructions,
+            &compact_hints,
             carry_len,
             self.timeouts.retry,
         )

@@ -1098,8 +1098,26 @@ async fn run_command(
 ///
 /// @param spec table Hint specification:
 ///   slot    (string)         Required. Aggregate slot name (e.g. "tool_usage", "conventions").
-///   content (string|function) Required. Static text, or a `function()` that returns a string. Max 1 MiB.
-///   prompt  (string|string[]) Optional. Restrict to specific prompt ids (e.g. "system").
+///                            For `prompt = "compact"` entries no template has
+///                            to contain it: entries are gathered across all
+///                            slots, and the slot only positions the entry in
+///                            the gathered order.
+///   content (string|function) Required. Static text, or a `function(ctx)` that
+///                            returns a string. Max 1 MiB. `ctx` is
+///                            `{ session_id = "..." }` naming the session whose
+///                            prompt is being built, or nil when there is no
+///                            session to name (startup, headless one-shots,
+///                            ACP clients).
+///   prompt  (string|string[]) Optional. Restrict to specific prompt ids
+///                            (e.g. "system", "compact"). "compact" entries
+///                            are appended to the compaction summary prompt
+///                            as extra instructions instead of a template.
+///                            They resolve with the run's other prompt
+///                            slots, so nothing caches them across turns:
+///                            auto-compaction sees them as of the start of
+///                            the run, a manual /compact as of the moment it
+///                            was requested. ACP clients are the exception:
+///                            they resolve all hints once at startup.
 /// @return
 /// @example
 /// maki.api.register_prompt_hint({
@@ -1138,8 +1156,9 @@ fn register_prompt_hint(lua: &Lua, #[ctx] plugin: Arc<str>, spec: Table) -> LuaR
 ///
 /// Identity and tone are available in system, research, and general prompts.
 /// Sections target the main agent when `prompt` is omitted. Only identity and
-/// tone accept a function called before every run. Its first value goes in the
-/// system prompt. Later changes reach the main agent as a context update.
+/// tone accept a function called before every run; it receives `ctx` as in
+/// `register_prompt_hint`. Its first value goes in the system prompt. Later
+/// changes reach the main agent as a context update.
 /// Other replacements require static strings.
 /// A known section missing from the resolved template is ignored, with a warning
 /// for explicit prompt targets.
