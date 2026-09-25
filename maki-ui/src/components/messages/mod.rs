@@ -472,6 +472,8 @@ impl MessagesPanel {
                 is_error: true,
                 annotation: None,
                 written_path: None,
+                context_size: 0,
+                context_window: 0,
             });
         }
     }
