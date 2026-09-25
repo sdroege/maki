@@ -109,6 +109,15 @@ fn trim_strings(value: &mut Value) {
     }
 }
 
+/// The gauge reading of the run a call serves, for events built outside the
+/// `run` funnel (they hold the ctx but never pass through it).
+fn error_with_context(id: String, message: impl Into<String>, ctx: &ToolContext) -> ToolDoneEvent {
+    ToolDoneEvent {
+        context_size: ctx.context_size,
+        context_window: ctx.context_window,
+        ..ToolDoneEvent::error(id, message)
+    }
+}
 /// Every tool call in maki lands here (native, Lua, MCP, subagents, batch
 /// children), which makes it the one place telemetry has to wrap, the one
 /// place [hooks] fire, and the one place a model call's [`CallInstructions`]
@@ -156,6 +165,8 @@ pub async fn run(
                 is_error: true,
                 annotation: None,
                 written_path: None,
+                context_size: ctx.context_size,
+                context_window: ctx.context_window,
             };
         }
     };
@@ -621,6 +632,8 @@ async fn run_inner(
                 is_error: true,
                 annotation: None,
                 written_path: None,
+                context_size: ctx.context_size,
+                context_window: ctx.context_window,
             }
         }
     }
@@ -649,6 +662,8 @@ async fn run_native_tool(
         is_error: true,
         annotation: None,
         written_path: None,
+        context_size: ctx.context_size,
+        context_window: ctx.context_window,
     };
 
     let invocation = match entry.tool.parse(input) {
@@ -774,6 +789,8 @@ async fn run_native_tool(
                 is_error: false,
                 annotation: result.annotation,
                 written_path: result.written_path,
+                context_size: ctx.context_size,
+                context_window: ctx.context_window,
             }
         }
         Err(message) => {
@@ -840,6 +857,8 @@ fn run_tool_search(
         is_error,
         annotation: None,
         written_path: None,
+        context_size: ctx.context_size,
+        context_window: ctx.context_window,
     }
 }
 
@@ -872,6 +891,8 @@ async fn run_local_tool(
         is_error,
         annotation: None,
         written_path: None,
+        context_size: ctx.context_size,
+        context_window: ctx.context_window,
     }
 }
 
@@ -1001,6 +1022,8 @@ async fn execute_mcp_tool(
         is_error,
         annotation: None,
         written_path: None,
+        context_size: ctx.context_size,
+        context_window: ctx.context_window,
     };
 
     let perm_tool = match ToolKey::parse(&tool) {
@@ -1056,7 +1079,7 @@ pub(super) async fn process_tool_calls(
         );
         if recent_calls.is_doom_loop(&name, &input) {
             warn!(tool = %name, "doom loop detected, skipping execution");
-            immediate_errors.push(ToolDoneEvent::error(id.clone(), DOOM_LOOP_MESSAGE));
+            immediate_errors.push(error_with_context(id.clone(), DOOM_LOOP_MESSAGE, ctx));
         } else {
             runnable.push((id, name.clone(), input.clone()));
         }
@@ -1093,7 +1116,7 @@ pub(super) async fn process_tool_calls(
             Ok(out) => out,
             Err(e) => {
                 error!(error = %e, "tool task panicked");
-                ToolDoneEvent::error(id, format!("internal error: tool panicked: {e}"))
+                error_with_context(id, format!("internal error: tool panicked: {e}"), ctx)
             }
         })
         .collect();

@@ -309,10 +309,10 @@ async fn current(lua: Lua, #[ctx] tx: Option<flume::Sender<UiAction>>) -> LuaRes
 ///   archives (boolean) include the session's archived windows (default false).
 /// @return (table|nil, string|nil) `{ id, windows }`, or nil and an error.
 /// @example
-/// local t, err = maki.session.messages({ archives = true })
+/// local t, err = maki.session.transcript({ archives = true })
 /// local current = t.windows[1]
 #[lua_fn]
-async fn messages(
+async fn transcript(
     lua: Lua,
     #[ctx] tx: Option<flume::Sender<UiAction>>,
     opts: Option<Table>,
@@ -501,7 +501,7 @@ lua_table! {
         may_run_agents: bool,
     ),
     DOCS [
-        list(tx), live(tx), current(tx), read(tx), messages(tx), focus(tx), delete(tx),
+        list(tx), live(tx), current(tx), read(tx), messages(tx), transcript(tx), focus(tx), delete(tx),
         new(tx, may_run_agents), prompt(perms, tx), notify(may_run_agents), set_mode(tx), set_title(tx),
     ]
 }
@@ -623,9 +623,9 @@ mod tests {
         assert!(val);
     }
 
-    #[test_case(r#"return session.messages({ session = 'abc', archives = true })"#, Some("abc"), true ; "explicit_session_and_archives")]
-    #[test_case("return session.messages()", None, false ; "defaults_to_focused_without_archives")]
-    fn messages_forwards_session_id_and_archives_flag(
+    #[test_case(r#"return session.transcript({ session = 'abc', archives = true })"#, Some("abc"), true ; "explicit_session_and_archives")]
+    #[test_case("return session.transcript()", None, false ; "defaults_to_focused_without_archives")]
+    fn transcript_forwards_session_id_and_archives_flag(
         code: &str,
         expected_id: Option<&str>,
         expected_archives: bool,
