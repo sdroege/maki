@@ -54,6 +54,9 @@ const LOG_BLOATED: &str = "too many stale meta records";
 const MAX_APPENDS: usize = 512;
 /// Where a shrink rewrite parks the log it is about to drop, as `archive/<id>/`.
 const ARCHIVE_DIR: &str = "archive";
+/// Session-scoped plugin notes, as `notes/<id>/`. Co-located with the log so
+/// the delete that takes the session takes them too.
+pub const NOTES_DIR: &str = "notes";
 /// Where [`SessionClaim`] keeps its lock files, as `locks/<id>`. Not `<id>.lock`
 /// next to the log, because [`session_entries`] reads the sessions dir on every
 /// scan and would wade through one lock file per session.
@@ -2264,13 +2267,15 @@ where
         claim.forget_cursor();
         let mut removed = try_remove(&jsonl_path(dir, id))?;
         removed |= remove_legacy_files(dir, id)?;
-        // Backups, not the session: failing to sweep them must not fail a
-        // delete whose log is already gone, and their presence alone does not
-        // make a session exist.
-        if let Err(e) = fs::remove_dir_all(dir.join(ARCHIVE_DIR).join(id.to_string()))
-            && e.kind() != ErrorKind::NotFound
-        {
-            warn!(error = %e, session_id = %id, "session archives remain after delete");
+        // Archives and session-scoped notes: failing to sweep them must not
+        // fail a delete whose log is already gone, and their presence alone
+        // does not make a session exist.
+        for kind in [ARCHIVE_DIR, NOTES_DIR] {
+            if let Err(e) = fs::remove_dir_all(dir.join(kind).join(id.to_string()))
+                && e.kind() != ErrorKind::NotFound
+            {
+                warn!(error = %e, dir = kind, session_id = %id, "session files remain after delete");
+            }
         }
         if !removed {
             return Err(StorageError::NotFound(id.to_string()).into());
@@ -2290,7 +2295,7 @@ mod tests {
     use super::canonical_key;
     use super::{
         ARCHIVE_DIR, ARCHIVE_KEEP, ARCHIVE_MAX_BYTES, CWD_INDEX_FILE, DEFAULT_TITLE, LOG_BLOATED,
-        MAX_APPENDS, MAX_TITLE_LEN, MSG_PREFIX, SESSION_VERSION, SESSIONS_DIR,
+        MAX_APPENDS, MAX_TITLE_LEN, MSG_PREFIX, NOTES_DIR, SESSION_VERSION, SESSIONS_DIR,
         StoredSubagent, TAIL_BUF, generate_title, json_path, jsonl_path, load_cwd_index, lock_path,
         locks_dir, next_epoch, update_cwd_index, write_full_session,
     };
@@ -3093,6 +3098,21 @@ mod tests {
         TestSession::delete_from(&claim_id(dir, session.id), dir).unwrap();
         assert!(!archive_dir.exists());
         assert!(!jsonl_path(dir, session.id).exists());
+    }
+
+    #[test]
+    fn delete_removes_notes_dir() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        let mut session: TestSession = Session::new("model", "/p");
+        session.push_message(user_message("one"));
+        session.save_to(&claim_for(dir, &session), dir).unwrap();
+        let notes_dir = dir.join(NOTES_DIR).join(session.id.to_string());
+        fs::create_dir_all(&notes_dir).unwrap();
+        fs::write(notes_dir.join("scratch.md"), "a note").unwrap();
+
+        TestSession::delete_from(&claim_id(dir, session.id), dir).unwrap();
+        assert!(!notes_dir.exists());
     }
 
     #[test]
