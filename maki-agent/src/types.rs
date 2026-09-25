@@ -505,6 +505,14 @@ pub struct ToolDoneEvent {
     pub is_error: bool,
     pub annotation: Option<String>,
     pub written_path: Option<String>,
+    /// The context usage of the run the tool served, at dispatch time: the
+    /// gauge reading the `TurnEnd`/`AutoCompacting` events share, so a
+    /// listener can nudge the model mid-turn before auto-compaction fires.
+    /// Per-run, so a subagent's tool calls report the subagent's own window.
+    /// `0` from constructors with no run to ask (UI restores, ACP).
+    pub context_size: u32,
+    /// The window `context_size` is a share of; `0` when unknown.
+    pub context_window: u32,
     /// Only dispatch fills this, so an event made up anywhere else (a
     /// doom-loop refusal, a restored transcript) has none.
     #[serde(skip)]
@@ -534,6 +542,8 @@ impl ToolDoneEvent {
             is_error: true,
             annotation: None,
             written_path: None,
+            context_size: 0,
+            context_window: 0,
             call: None,
             backgrounded: false,
         }
@@ -1651,6 +1661,8 @@ mod tests {
                 is_error: false,
                 annotation: None,
                 written_path: None,
+                context_size: 0,
+                context_window: 0,
                 backgrounded: true,
             },
             ToolDoneEvent {
@@ -1661,6 +1673,8 @@ mod tests {
                 is_error: true,
                 annotation: None,
                 written_path: None,
+                context_size: 0,
+                context_window: 0,
                 backgrounded: false,
             },
         ]);
@@ -1692,6 +1706,8 @@ mod tests {
             is_error: false,
             annotation: None,
             written_path: None,
+            context_size: 0,
+            context_window: 0,
             backgrounded: false,
         };
 
@@ -1776,6 +1792,8 @@ mod tests {
             is_error: false,
             annotation: None,
             written_path: Some("/plans/slug.md".into()),
+            context_size: 0,
+            context_window: 0,
             backgrounded: false,
         };
         assert!(!ok_event.wrote_to(Path::new("/plans/other.md")));
@@ -1996,6 +2014,8 @@ mod tests {
             is_error,
             annotation: None,
             written_path,
+            context_size: 0,
+            context_window: 0,
             backgrounded: false,
         };
         assert_eq!(event.written_path(), expected);
