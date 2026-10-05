@@ -637,8 +637,9 @@ fn owned(slugs: &OwnedSlugs, slug: &str) -> LuaResult<()> {
 ///
 /// {spec} fields:
 ///   `slug` (string) Required. Letters, digits, `_` and `-`, starting with a
-///           letter or digit. Must not be a slug Maki ships, one it serves
-///           from models.dev, or one defined in `providers.toml`.
+///           letter or digit. Must not be a slug Maki ships, or one defined
+///           in `providers.toml`. A slug Maki serves from models.dev may be
+///           taken: the plugin then replaces the catalog provider.
 ///   `display_name` (string) Required. Shown in the UI.
 ///   `codec` (string) Wire format: `"openai"`, `"openai-responses"`,
 ///           `"anthropic"` or `"google"`.

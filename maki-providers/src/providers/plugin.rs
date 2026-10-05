@@ -302,7 +302,7 @@ pub enum RegisterError {
     InvalidSlug(String),
     #[error("provider slug '{0}' is already defined in providers.toml")]
     ConfiguredSlug(String),
-    #[error("provider slug '{0}' belongs to a built-in or models.dev provider")]
+    #[error("provider slug '{0}' belongs to a provider maki ships")]
     ReservedSlug(String),
     #[error("provider '{slug}': {message}")]
     Credentials { slug: String, message: String },
@@ -531,18 +531,25 @@ fn register_owned(
     if !is_valid_slug(&slug) {
         return Err(RegisterError::InvalidSlug(slug));
     }
-    // A third party on a slug maki ships or serves from models.dev would be
-    // handed the key the user saved for that provider, and would take over
-    // its models. A bundled slug stays reserved even while its plugin is off,
-    // so turning a plugin off never frees the name.
+    // A third party on a slug maki ships would be handed the key the user
+    // saved for that provider, and would take over its models under a name
+    // the picker still labels as maki's own. A slug maki only serves from
+    // models.dev is a default the user never chose, so a plugin the user
+    // installed may replace it, and the takeover is logged below. A bundled
+    // slug stays reserved even while its plugin is off, so turning a plugin
+    // off never frees the name.
     let reserved = match authority {
         DeclAuthority::Bundled => ProviderRegistry::compiled(&slug).is_some(),
-        DeclAuthority::ThirdParty => {
-            ProviderRegistry::is_shipped(&slug) || catalog::serves_slug(&slug)
-        }
+        DeclAuthority::ThirdParty => ProviderRegistry::is_shipped(&slug),
     };
     if reserved {
         return Err(RegisterError::ReservedSlug(slug));
+    }
+    // The catalog provider the plugin replaces may be one the user already
+    // logged into, so say the takeover happened. A cold catalog cannot be
+    // asked, so an offline load stays quiet rather than guessing.
+    if authority == DeclAuthority::ThirdParty && catalog::serves_slug(&slug) {
+        warn!(slug, "third-party plugin replaces the models.dev provider");
     }
     // A `providers.toml` entry only defines a provider when it sets a
     // `protocol`, and only a third party loses the slug to it. Without one the
@@ -2462,12 +2469,15 @@ mod tests {
         assert!(!is_registered(slug), "{RESERVED_SLUG_TAKEN}");
     }
 
-    /// `maki auth login` saves a models.dev provider's key under its slug, so
-    /// a package declaring that slug would be handed the key and take over
-    /// the provider's models.
+    /// Installing a plugin is an explicit act the user reviews, so a slug maki
+    /// only serves from models.dev is a third party's to replace: the plugin
+    /// takes over the slug, and the catalog listing drops it. A slug maki
+    /// ships stays reserved (`a_shipped_slug_is_reserved`).
     #[test]
-    fn a_served_catalog_slug_is_reserved_for_third_parties() {
+    fn a_third_party_plugin_replaces_a_served_catalog_slug() {
         const CATALOG_SLUG: &str = "served-catalog";
+        const TAKEOVER_FAILED: &str = "the registration must have taken the slug";
+        const REPLACED: &str = "the catalog must stop listing the replaced slug";
         let provider = catalog::schema::CatalogProvider {
             name: DISPLAY_NAME.into(),
             env: Vec::new(),
@@ -2480,11 +2490,16 @@ mod tests {
             StateDir::from_path(Default::default()),
         );
 
-        let error =
-            register_loaded_as(registration(CATALOG_SLUG), DeclAuthority::ThirdParty).unwrap_err();
+        register_loaded_as(registration(CATALOG_SLUG), DeclAuthority::ThirdParty)
+            .expect("a catalog-served slug is a third party's to replace");
 
-        assert!(matches!(error, RegisterError::ReservedSlug(_)), "{error}");
-        assert!(!is_registered(CATALOG_SLUG), "{RESERVED_SLUG_TAKEN}");
+        assert!(is_registered(CATALOG_SLUG), "{TAKEOVER_FAILED}");
+        assert!(
+            !catalog::catalog_providers()
+                .iter()
+                .any(|provider| provider.slug == CATALOG_SLUG),
+            "{REPLACED}"
+        );
     }
 
     const UPSTREAM_SAID_NO: &str = "upstream said no";

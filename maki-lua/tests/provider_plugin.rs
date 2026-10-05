@@ -71,7 +71,7 @@ const RELOADED_SOURCE: &str = "-- the provider plugin, reloaded without its regi
 /// Shipped as a bundled plugin, which this file never loads.
 const BUILTIN_SLUG: &str = "deepseek";
 const BUILTIN_HOST: &str = "api.deepseek.com";
-const RESERVED_SLUG_MESSAGE: &str = "belongs to a built-in or models.dev provider";
+const RESERVED_SLUG_MESSAGE: &str = "belongs to a provider maki ships";
 const CLAIM_ALLOWED: &str = "a third-party plugin took a built-in slug";
 const BUILTIN_TAKEN: &str = "a refused declaration must not be serving the slug";
 
