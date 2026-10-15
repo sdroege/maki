@@ -285,8 +285,8 @@ pub struct ProviderDef {
     pub display_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub protocol: Option<Protocol>,
-    /// The plugin owner selected to implement this provider name. Catalog
-    /// metadata does not select an implementation or grant it credentials.
+    /// Legacy v0.6.4 `plugin =` selection, parsed so the slug stays owned and
+    /// the user is told to migrate. Not used for selection.
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -409,15 +409,12 @@ impl ProvidersConfig {
         };
         let config = toml::from_str::<ProvidersConfig>(&content)
             .map_err(|e| format!("invalid {}: {e}", stamp.0.display()))?;
-        config.validate()?;
         debug!(path = %stamp.0.display(), "loaded providers config");
         *parsed = Some((stamp, config.clone()));
         Ok(config)
     }
 
     pub fn save(&self) -> Result<(), std::io::Error> {
-        self.validate()
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
         let path = providers_file_path();
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
@@ -434,17 +431,6 @@ impl ProvidersConfig {
 
     pub fn get(&self, slug: &str) -> Option<&ProviderDef> {
         self.providers.get(slug)
-    }
-
-    fn validate(&self) -> Result<(), String> {
-        for (slug, def) in &self.providers {
-            if def.plugin.is_some() && def.protocol.is_some() {
-                return Err(format!(
-                    "provider '{slug}' must select either a plugin or a protocol"
-                ));
-            }
-        }
-        Ok(())
     }
 
     pub fn upsert(&mut self, slug: String, def: ProviderDef) {
@@ -759,50 +745,25 @@ mod tests {
     const EMPTY_PROVIDER_DEF_TOML: &str = "";
 
     #[test]
-    fn selected_plugin_roundtrip_preserves_gateway_settings() {
-        const PLUGIN: &str = "provider-package";
-        const SLUG: &str = "selected-provider";
-        const GATEWAY: &str = "https://gateway.example/v1";
-        let config: ProvidersConfig = toml::from_str(&format!(
-            "[{SLUG}]\nplugin = {PLUGIN:?}\nbase_url = {GATEWAY:?}\n"
-        ))
-        .unwrap();
-        let parsed: ProvidersConfig = toml::from_str(&toml::to_string(&config).unwrap()).unwrap();
-        let def = parsed.get(SLUG).unwrap();
-        assert_eq!(def.plugin.as_deref(), Some(PLUGIN));
-        assert_eq!(def.base_url.as_deref(), Some(GATEWAY));
-        assert!(def.protocol.is_none());
-        let legacy: ProviderDef = toml::from_str(EMPTY_PROVIDER_DEF_TOML).unwrap();
-        assert!(legacy.plugin.is_none());
-        assert!(!toml::to_string(&legacy).unwrap().contains("plugin"));
-    }
-
-    #[test_case("\"\"" ; "empty")]
-    #[test_case("\" \"" ; "whitespace")]
-    #[test_case("\" provider-package\"" ; "leading_whitespace")]
-    #[test_case("42" ; "wrong_type")]
-    fn invalid_plugin_owner_is_rejected(value: &str) {
-        assert!(toml::from_str::<ProviderDef>(&format!("plugin = {value}")).is_err());
-    }
-
-    #[test]
-    fn selected_plugin_cannot_save_a_protocol_definition() {
-        const SLUG: &str = "selected-provider";
-        const ERROR: &str = "must select either a plugin or a protocol";
-        let config: ProvidersConfig = toml::from_str(&format!(
-            "[{SLUG}]\nplugin = \"provider-package\"\nprotocol = \"openai\"\n"
-        ))
-        .unwrap();
-        let error = config.save().unwrap_err();
-        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
-        assert!(error.to_string().contains(SLUG));
-        assert!(error.to_string().contains(ERROR));
-    }
-
-    #[test]
     fn provider_def_enable_free_models_defaults_none() {
         let def: ProviderDef = toml::from_str(EMPTY_PROVIDER_DEF_TOML).unwrap();
         assert_eq!(def.enable_free_models, None);
+    }
+
+    #[test]
+    fn legacy_plugin_selection_parses() {
+        let config: ProvidersConfig =
+            toml::from_str("[my-slug]\nplugin = \"my-package\"\n").unwrap();
+        assert_eq!(
+            config.get("my-slug").unwrap().plugin.as_deref(),
+            Some("my-package")
+        );
+    }
+
+    #[test]
+    fn legacy_plugin_selection_rejects_empty_or_padded_name() {
+        assert!(toml::from_str::<ProvidersConfig>("[slug]\nplugin = \"\"\n").is_err());
+        assert!(toml::from_str::<ProvidersConfig>("[slug]\nplugin = \" padded\"\n").is_err());
     }
 
     const UNKNOWN_TIER_TOML: &str = r#"id = "x"
