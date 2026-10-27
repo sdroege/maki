@@ -168,6 +168,7 @@ declare maki: {
     focus: @checked (id: string) -> (boolean?, string?),
     remove: @checked (id: string) -> (boolean?, string?),
     stop: @checked (id: any, opts: any) -> (any, string?),
+    send: @checked (id: string, text: string) -> (boolean?, string?),
   },
   text: {
     html_to_markdown: @checked (html: string) -> (string?, string?),

@@ -921,9 +921,10 @@ name the session now running or focused. What each event adds:
   served when it was dispatched (a window of 0 means no run to ask, so
   guard any division against it). Mid-turn, before `"AutoCompacting"`
   fires, so a plugin can nudge the model while there is still room to
-  act. Fires for subagent tool calls too, with `data.subagent` true and
-  the subagent's own usage, which says nothing about the parent
-  session's context.
+  act. Fires for subagent tool calls too, carrying the subagent's own
+  usage, which says nothing about the parent session's context, and
+  `data.task_id`, the id `maki.task.send` answers that subagent by. The
+  main session's own calls carry no `task_id`.
 - `"TurnStart"`: `data.text`, the message that started the turn.
 - `"TurnEnd"`: `data.reason` (`"finished"`, `"max_tokens"`,
   `"max_turns"`, `"cancelled"`, or `"dropped"` when an
@@ -5560,11 +5561,7 @@ Requires the `session_write` [plugin permission](#plugin-permissions).
   - `wake` (`boolean`) deliver at the session's next turn boundary, or start a
 
   turn right away when it is idle (default false). A wake is a
-
-
   point-in-time claim, so it is not parked until the session goes idle.
-
-
   Needs the `agent` permission.
 
   - `display` (`string?`) one-line note for the transcript, shown and saved
@@ -5665,7 +5662,7 @@ h:stop()
 
 The subagents of the focused session and their transcripts. Tasks are
 spawned by the `task` tool and addressed by an id that survives a reload.
-Without an interactive UI every function returns
+Without an interactive UI every function but `send` returns
 `nil, "no interactive UI attached"`.
 
 ---
@@ -5799,6 +5796,37 @@ agent's running task ids.
 local _, err = maki.task.stop(task.id, { session = task.session })
 -- in a tool handler
 local stopped, err = maki.task.stop(ctx, input.id)
+```
+
+---
+
+### `maki.task.send()` {#maki-task-send}
+
+```lua
+maki.task.send({id}, {text})
+```
+
+Queues {text} for a subagent that is running, addressed by the task id its
+events carry. The subagent reads it at its next turn boundary the way it
+reads a message typed into its tab, so nothing is interrupted mid-tool.
+A task that is idle, finished, or not a subagent answers with an error; the
+main chat is `maki.session.prompt`'s and `maki.session.notify`'s business.
+Unlike the rest of this module this needs no interactive UI, since the run
+itself is what answers.
+
+Requires the `session_write` [plugin permission](#plugin-permissions).
+
+**Parameters:**
+
+- `{id}` (`string`) Task id, what `ToolDone` reports as `data.task_id`.
+- `{text}` (`string`) Message for the subagent. Must not be blank.
+
+**Returns:** (`boolean|nil`, `string|nil`) true, or nil and an error.
+
+**Example:**
+
+```lua
+maki.task.send(ev.data.task_id, "wrap up and return what you have so far")
 ```
 
 
