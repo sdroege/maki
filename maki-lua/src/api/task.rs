@@ -1,7 +1,8 @@
 //! `maki.task`. The host keeps the subagent transcripts, so a plugin only needs
-//! to list the tasks and show one.
+//! to list the tasks, show one, and send it a message while it runs.
 
-use maki_agent::SessionMailbox;
+use maki_agent::{AgentInput, AgentMode, InputSource, SessionMailbox};
+use maki_config::SessionDefaults;
 use maki_lua_macro::{lua_fn, lua_table};
 use mlua::{Either as LuaEither, Lua, LuaSerdeExt, Result as LuaResult, UserDataRef, Value};
 
@@ -11,10 +12,12 @@ use crate::api::util::pair::{Pair, err_pair, try_pair};
 use crate::background::BackgroundTasks;
 use crate::plugin_permissions::PluginPermissions;
 use crate::runtime::{CANCEL_ABANDON_AFTER, is_user_action};
+use crate::subagents::LiveSubagents;
 
 const USER_ACTION_ERR: &str = "stopping a task requires a user command or keybind";
 const TASK_ID_ERR: &str = "stop(ctx, id): id must be a string";
 const STOP_OPTS_ERR: &str = "stop(id, opts): opts must be a table";
+const BLANK_SEND_ERR: &str = "cannot send a blank message";
 
 async fn roundtrip(
     lua: Lua,
@@ -158,16 +161,49 @@ async fn stop(
     roundtrip(lua, tx, TaskRequest::Stop { id, session }).await
 }
 
+/// Queues {text} for a subagent that is running, addressed by the task id its
+/// events carry. The subagent reads it at its next turn boundary the way it
+/// reads a message typed into its tab, so nothing is interrupted mid-tool.
+/// A task that is idle, finished, or not a subagent answers with an error; the
+/// main chat is `maki.session.prompt`'s and `maki.session.notify`'s business.
+/// Unlike the rest of this module this needs no interactive UI, since the run
+/// itself is what answers.
+///
+/// @param id string Task id, what `ToolDone` reports as `data.task_id`.
+/// @param text string Message for the subagent. Must not be blank.
+/// @return (boolean|nil, string|nil) true, or nil and an error.
+/// @example
+/// maki.task.send(ev.data.task_id, "wrap up and return what you have so far")
+#[lua_fn(guard = SessionWrite)]
+fn send(_lua: &Lua, id: String, text: String) -> LuaResult<Pair<bool>> {
+    if text.trim().is_empty() {
+        return Ok(err_pair(BLANK_SEND_ERR));
+    }
+    // Subagent sessions always run build mode, and an interrupt carries no
+    // thinking or fast of its own: the run keeps what it is already running.
+    let input = AgentInput::from_defaults(
+        text,
+        AgentMode::Build,
+        Vec::new(),
+        SessionDefaults::default(),
+        InputSource::Plugin,
+    );
+    match LiveSubagents::send(&id, input) {
+        Ok(()) => Ok((Some(true), None)),
+        Err(error) => Ok(err_pair(error)),
+    }
+}
+
 lua_table! {
     /// The subagents of the focused session and their transcripts. Tasks are
     /// spawned by the `task` tool and addressed by an id that survives a reload.
-    /// Without an interactive UI every function returns
+    /// Without an interactive UI every function but `send` returns
     /// `nil, "no interactive UI attached"`.
     "maki.task" => pub(crate) fn create_task_table(
         tx: Option<flume::Sender<UiAction>>,
         perms: &PluginPermissions,
     ),
-    DOCS [list(tx), focus(tx), remove(perms, tx), stop(tx)]
+    DOCS [list(tx), focus(tx), remove(perms, tx), stop(tx), send(perms)]
 }
 
 #[cfg(test)]

@@ -14,6 +14,7 @@ mod pack;
 pub(crate) mod plugin_permissions;
 mod runtime;
 pub mod session_snapshot;
+mod subagents;
 
 pub use api::action::ActionInfo;
 pub use api::r#fn::set_shell_preference;

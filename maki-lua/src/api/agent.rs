@@ -57,6 +57,7 @@ use crate::background::{
 };
 use crate::plugin_permissions::{Permission, PluginPermissions, require};
 use crate::runtime::{CANCELLED_MSG, active_task_cancel, host_ui};
+use crate::subagents::LiveSubagents;
 
 const SESSION_CLOSED_ERR: &str = "session closed";
 /// Esc in the task's tab. Distinct from [`CANCELLED_MSG`], so a loop can tell
@@ -1959,6 +1960,9 @@ async fn prompt(
     // on, so we close them before going again.
     s.history.close_dangling_tool_calls(UNAVAILABLE_RESULT);
     let history_len = s.history.len();
+    // Answering `maki.task.send` for exactly as long as this run goes on: the
+    // guard is dropped when the run ends, is cancelled, or is dropped mid-await.
+    let _subagent_run = LiveSubagents::open(&s.cancellation.ui_id, &inbox);
     let mut input = AgentInput {
         earlier,
         ..plugin_input(message, s.opts)
