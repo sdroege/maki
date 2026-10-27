@@ -254,9 +254,10 @@ fn parse_string_or_seq(value: Value, what: &str) -> LuaResult<Vec<String>> {
 ///   served when it was dispatched (a window of 0 means no run to ask, so
 ///   guard any division against it). Mid-turn, before `"AutoCompacting"`
 ///   fires, so a plugin can nudge the model while there is still room to
-///   act. Fires for subagent tool calls too, with `data.subagent` true and
-///   the subagent's own usage, which says nothing about the parent
-///   session's context.
+///   act. Fires for subagent tool calls too, carrying the subagent's own
+///   usage, which says nothing about the parent session's context, and
+///   `data.task_id`, the id `maki.task.send` answers that subagent by. The
+///   main session's own calls carry no `task_id`.
 /// - `"TurnStart"`: `data.text`, the message that started the turn.
 /// - `"TurnEnd"`: `data.reason` (`"finished"`, `"max_tokens"`,
 ///   `"max_turns"`, `"cancelled"`, or `"dropped"` when an
