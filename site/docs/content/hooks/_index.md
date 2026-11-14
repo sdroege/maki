@@ -276,12 +276,16 @@ inside a subagent), `model`, `context_size`, `context_window`, and
 A layer on any of them needs every permission, because it steers what the agent
 does next. The chain gets 30 seconds, then the loop carries on without it.
 
-Every layer shares the same `continue` and `instructions` strings, so assigning
-one erases what another layer wrote. Append instead, and allow for `nil`:
+Every layer shares the same `defer`, `continue`, and `instructions` strings, so
+assigning one erases what another layer wrote. Append instead, and allow for
+`nil`:
 
 ```lua
 value.continue = (value.continue and value.continue .. "\n" or "") .. "Re-read PLAN.md."
 ```
+
+One defer is granted between two compactions, so layers that want to add a
+nudge share the one turn instead of each getting their own.
 
 ### agent.user_message
 
@@ -334,6 +338,13 @@ Return a table with any of:
 
 - `skip = true`: skip this compaction, same as `nil, reason`. An overflow
   cannot be skipped, because the run cannot go on without compacting.
+- `defer = text`: skip this automatic compaction once. `text` becomes the
+  model's next message, so it gets one turn to save state with tools. The
+  next automatic ask compacts as usual, whether that turn used tools or
+  answered. One defer is granted between two compactions; a landing
+  compaction renews it. The host refuses it when the window has no room for
+  that turn. It works in subagent runs too. It does nothing for `"manual"`
+  and `"overflow"`, and it wins over `skip`.
 - `instructions`: appended to the summary prompt, after the configured and
   requested ones.
 - `continue`: text appended to the message the agent resumes with.
