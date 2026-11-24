@@ -46,8 +46,9 @@ const BACKGROUND_LOST_LABEL: &str = "lost";
 const SECS_PER_MINUTE: u64 = 60;
 const SECS_PER_HOUR: u64 = 3600;
 const RIGHT_INFO_GAP: &str = "  ";
-const ASSISTANT_LABEL: &str = "maki> ";
-const USER_LABEL: &str = "you> ";
+const ASSISTANT_MARKER: &str = TOOL_INDICATOR;
+const USER_MARKER: &str = "❯ ";
+pub const BLANK_MARKER: &str = "  ";
 const THINKING_LABEL: &str = "thinking> ";
 pub(crate) const SPINNER_STYLE_NAME: &str = "spinner";
 pub(crate) const SPINNER_STYLE_PREFIX: &str = "spinner:";
@@ -60,7 +61,8 @@ const INSTRUCTIONS_TOOL: &str = "load";
 const UNNAMED_TOOL: &str = "?";
 
 pub struct RoleStyle {
-    pub accent: Style,
+    pub marker: &'static str,
+    pub marker_style: Style,
     pub label: &'static str,
     pub text_style: Style,
     pub use_markdown: bool,
@@ -69,14 +71,19 @@ pub struct RoleStyle {
 
 impl RoleStyle {
     pub fn label_style(&self) -> Style {
-        self.accent.add_modifier(Modifier::BOLD)
+        self.marker_style.add_modifier(Modifier::BOLD)
+    }
+
+    pub fn gutter(&self) -> Span<'static> {
+        Span::styled(self.marker, self.label_style())
     }
 }
 
 pub fn assistant_style() -> RoleStyle {
     RoleStyle {
-        accent: theme::current().assistant_prefix,
-        label: ASSISTANT_LABEL,
+        marker: ASSISTANT_MARKER,
+        marker_style: theme::current().assistant_prefix,
+        label: "",
         text_style: theme::current().assistant,
         use_markdown: true,
         max_line_bytes: None,
@@ -85,8 +92,9 @@ pub fn assistant_style() -> RoleStyle {
 
 pub fn user_style() -> RoleStyle {
     RoleStyle {
-        accent: theme::current().user,
-        label: USER_LABEL,
+        marker: USER_MARKER,
+        marker_style: theme::current().user,
+        label: "",
         text_style: theme::current().user_text,
         use_markdown: false,
         max_line_bytes: None,
@@ -95,7 +103,8 @@ pub fn user_style() -> RoleStyle {
 
 pub fn thinking_style() -> RoleStyle {
     RoleStyle {
-        accent: theme::current().thinking,
+        marker: ASSISTANT_MARKER,
+        marker_style: theme::current().thinking,
         label: THINKING_LABEL,
         text_style: theme::current().thinking,
         use_markdown: true,
@@ -105,7 +114,8 @@ pub fn thinking_style() -> RoleStyle {
 
 pub fn error_style() -> RoleStyle {
     RoleStyle {
-        accent: theme::current().tool_error,
+        marker: BLANK_MARKER,
+        marker_style: theme::current().tool_error,
         label: "",
         text_style: theme::current().error,
         use_markdown: false,
@@ -115,7 +125,8 @@ pub fn error_style() -> RoleStyle {
 
 pub fn notice_style() -> RoleStyle {
     RoleStyle {
-        accent: theme::current().tool_dim,
+        marker: BLANK_MARKER,
+        marker_style: theme::current().tool_dim,
         label: "",
         text_style: theme::current().tool_dim,
         use_markdown: false,
@@ -125,7 +136,8 @@ pub fn notice_style() -> RoleStyle {
 
 pub fn done_style() -> RoleStyle {
     RoleStyle {
-        accent: theme::current().tool_success,
+        marker: BLANK_MARKER,
+        marker_style: theme::current().tool_success,
         label: "",
         text_style: theme::current().tool_success.add_modifier(Modifier::BOLD),
         use_markdown: false,
