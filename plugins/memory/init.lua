@@ -115,21 +115,41 @@ local function cmd_read(path, dir, ctx)
   }
 end
 
+-- A frontmatter block in `content` is honoured but worth teaching around, so the
+-- result says where the tags went instead of leaving that to guesswork.
+local function advisory_suffix(note, stripped, adopted)
+  local parts = {}
+  if note then
+    parts[#parts + 1] = note
+  end
+  if stripped then
+    if adopted then
+      parts[#parts + 1] = "used the tags from the frontmatter in `content`. Pass `tags` instead"
+    else
+      parts[#parts + 1] = "removed the frontmatter from `content`. The `tags` argument is what tags a note"
+    end
+  end
+  return #parts > 0 and (". " .. table.concat(parts, ". ")) or ""
+end
+
 local function cmd_write(path, content, tags, dir, ctx)
   local file_path, err = helpers.safe_resolve(dir, path)
   if not file_path then
     return nil, err
   end
 
-  local size_err = helpers.validate_write_size(content)
+  local inline_tags, body, stripped = helpers.take_frontmatter(content)
+  local size_err = helpers.validate_write_size(body)
   if size_err then
     return nil, size_err
   end
-  local normalized, tag_err, note = helpers.validate_write_tags(tags or {})
+  local explicit = tags and #tags > 0
+  local adopted = not explicit and inline_tags ~= nil
+  local normalized, tag_err, note = helpers.validate_write_tags(explicit and tags or inline_tags or {})
   if tag_err then
     return nil, tag_err
   end
-  local full = helpers.encode_frontmatter(normalized) .. content
+  local full = helpers.encode_frontmatter(normalized) .. body
   local _, mkdir_err = maki.fs.mkdir(dir, { parents = true })
   if mkdir_err then
     return nil, "write error: " .. mkdir_err
@@ -142,10 +162,10 @@ local function cmd_write(path, content, tags, dir, ctx)
     llm_output = "wrote "
       .. path
       .. " (tags: "
-      .. (#normalized > 0 and table.concat(normalized, ", ") or "none")
+      .. (#normalized > 0 and table.concat(normalized, ", ") or "none, indexed under the filename stem")
       .. ")"
-      .. (note and ("; " .. note) or ""),
-    body = render_content(content, path, ctx),
+      .. advisory_suffix(note, stripped, adopted),
+    body = render_content(body, path, ctx),
   }
 end
 
@@ -198,7 +218,7 @@ maki.api.register_tool({
         type = "string",
         description = "Relative path, e.g. 'architecture.md'.",
       },
-      content = { type = "string", description = "Body for write (frontmatter added automatically)." },
+      content = { type = "string", description = "Body for write. Tags go in `tags`. Never include frontmatter." },
       tags = {
         type = "array",
         items = { type = "string" },

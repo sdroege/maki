@@ -9,8 +9,10 @@ local extract_tags = h.extract_tags
 local tags_for_file = h.tags_for_file
 local format_tag_line = h.format_tag_line
 local encode_frontmatter = h.encode_frontmatter
+local take_frontmatter = h.take_frontmatter
 local format_list = h.format_list
 local format_read = h.format_read
+local format_read_entry = h.format_read_entry
 local cap_read_output = h.cap_read_output
 local validate_write_tags = h.validate_write_tags
 local validate_write_size = h.validate_write_size
@@ -287,17 +289,20 @@ case("parse_frontmatter_falls_back_to_whole_content", function()
     "Just content",
     "---\ntags:\n  - a\nbody without close",
     "---\n---\nbody",
+    "---\n\n---\nbody",
+    "---\nhello world\n---\nbody",
+    "---\n- a\n- b\n---\nbody",
   }
   for _, input in ipairs(inputs) do
     local fm, body = parse_frontmatter(input)
-    eq(body, input, "invalid frontmatter keeps content intact: " .. ("%q"):format(input:sub(1, 24)))
+    eq(body, input, "a block that is not metadata keeps content intact: " .. ("%q"):format(input:sub(1, 24)))
     eq(next(fm), nil)
   end
 end)
 
 case("parse_frontmatter_malformed_yaml_keeps_body", function()
   local fm, body = parse_frontmatter("---\ntags: [unterminated\n---\nbody")
-  eq(body, "body", "body survives a YAML decode failure")
+  eq(body, "---\ntags: [unterminated\n---\nbody", "undecodable metadata stays visible instead of vanishing")
   eq(extract_tags(fm), nil)
 end)
 
@@ -327,6 +332,22 @@ case("tags_for_file_uses_frontmatter", function()
   eq(#tags, 2)
   eq(tags[1], "architecture")
   eq(tags[2], "rust")
+end)
+
+case("tags_for_file_finds_tags_behind_a_dead_header", function()
+  local tags = tags_for_file("a.md", "---\ntags: {}\n---\n---\ntags: [git]\n---\nbody")
+  eq(tags[1], "git", "a note written with two headers is indexed by its real tags")
+end)
+
+case("tags_for_file_does_not_index_a_leading_divider", function()
+  local tags = tags_for_file("n.md", "---\n# Section\n---\nbody")
+  eq(tags[1], "n", "a Markdown divider is body, so the note keeps its stem tag")
+end)
+
+case("read_keeps_a_divider_followed_by_a_bullet_list", function()
+  local note = "---\n- one\n- two\n---\nrest"
+  eq(tags_for_file("n.md", note)[1], "n", "a list between fences is not metadata")
+  assert(format_read_entry("n.md", 30, note):find("- one\n- two", 1, true), "the list survives read")
 end)
 
 case("tags_for_file_stem_fallbacks", function()
@@ -507,6 +528,56 @@ case("encode_frontmatter_round_trips", function()
   eq(parsed[2], "sessions")
 
   eq(extract_tags(parse_frontmatter(encode_frontmatter({}) .. "body")), nil, "empty tags round-trip to stem fallback")
+end)
+
+case("encode_frontmatter_is_absent_without_tags", function()
+  eq(encode_frontmatter({}), "", "no frontmatter beats an empty tags mapping")
+end)
+
+case("take_frontmatter_recovers_included_tags", function()
+  local tags, body, stripped = take_frontmatter("---\ntags: [gotchas, rust]\n---\n\n# Guard\n\nbody")
+  eq(stripped, true)
+  eq(tags[1], "gotchas")
+  eq(tags[2], "rust")
+  eq(body, "# Guard\n\nbody")
+end)
+
+case("take_frontmatter_heals_a_doubled_block", function()
+  local tags, body = take_frontmatter("---\ntags: {}\n---\n---\ntags: [Git]\n---\nbody")
+  eq(tags[1], "git", "the empty block hid the real one behind the first closing fence")
+  eq(body, "body")
+end)
+
+case("take_frontmatter_strips_tags_without_adopting_other_keys", function()
+  local tags, body, stripped = take_frontmatter("---\ntitle: x\n---\nbody")
+  eq(stripped, true, "tagless frontmatter would still bury the real block")
+  eq(tags, nil)
+  eq(body, "body")
+end)
+
+case("take_frontmatter_leaves_plain_bodies_alone", function()
+  local vectors = {
+    { "plain body", "plain body" },
+    { "---\nhello world\n---\nx", "---\nhello world\n---\nx" },
+    { "---\n\n---\nbody", "---\n\n---\nbody" },
+    { "---\n- one\n- two\n---\nrest", "---\n- one\n- two\n---\nrest" },
+    { "body\n---\ntags: [late]\n---", "body\n---\ntags: [late]\n---" },
+  }
+  for _, v in ipairs(vectors) do
+    local tags, body, stripped = take_frontmatter(v[1])
+    eq(stripped, false, v[1])
+    eq(tags, nil, v[1])
+    eq(body, v[2], v[1])
+  end
+end)
+
+case("format_read_entry_peels_a_dead_header_and_keeps_a_divider", function()
+  local doubled = format_read_entry("a.md", 60, "---\ntags: {}\n---\n---\ntags: [git]\n---\nbody")
+  assert(doubled:find("^a%.md %(60 bytes%) %[git%]"), "the real tags headline a legacy note")
+  eq(doubled:match("\n\n(.*)$"), "body", "both headers are gone from the body")
+
+  local divider = format_read_entry("n.md", 30, "---\n# Section\n---\nbody")
+  assert(divider:find("---\n# Section", 1, true), "read keeps the section a note opens with")
 end)
 
 case_tmp("format_read_union_headers_and_no_match", function(dir)

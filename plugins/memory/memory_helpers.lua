@@ -218,6 +218,22 @@ local function combine_unreadable(warnings)
   return UNREADABLE_PREFIX .. table.concat(warnings, ", ")
 end
 
+-- Only a mapping is metadata. A bullet list between fences decodes to a table as
+-- well, and taking it for a header would swallow the list, so a header needs a
+-- key to carry tags in. Scalars, empty blocks and undecodable text stay visible
+-- as body instead of vanishing from a note the moment it is read back.
+local function is_mapping(value)
+  if type(value) ~= "table" then
+    return false
+  end
+  for key in pairs(value) do
+    if type(key) == "string" then
+      return true
+    end
+  end
+  return false
+end
+
 function M.parse_frontmatter(content)
   local rest = content:match("^%s*%-%-%-\n(.*)")
   if not rest then
@@ -227,10 +243,11 @@ function M.parse_frontmatter(content)
   if not end_pos then
     return {}, content
   end
-  local yaml_str = rest:sub(1, end_pos)
-  local body = rest:sub(end_pos + 4):match("^%s*(.-)%s*$")
-  local fm = maki.yaml.decode(yaml_str) or {}
-  return fm, body
+  local fm = maki.yaml.decode(rest:sub(1, end_pos))
+  if not is_mapping(fm) then
+    return {}, content
+  end
+  return fm, rest:sub(end_pos + 4):match("^%s*(.-)%s*$")
 end
 
 function M.extract_tags(frontmatter)
@@ -250,7 +267,7 @@ end
 
 function M.tags_for_file(path, content, read_err)
   if content then
-    local tags = M.extract_tags(M.parse_frontmatter(content))
+    local tags = M.take_frontmatter(content)
     if tags then
       return tags, nil
     end
@@ -391,10 +408,39 @@ function M.format_tag_line(dir, max_tags)
   return line
 end
 
--- maki.yaml.encode renders an empty list as an empty mapping; extract_tags treats both as empty.
+-- maki.yaml.encode renders an empty list as an empty mapping, so an untagged note
+-- gets no frontmatter at all: tags_for_file falls back to the stem either way.
 function M.encode_frontmatter(tags)
+  if #tags == 0 then
+    return ""
+  end
   local yaml, _ = maki.yaml.encode({ tags = tags })
   return "---\n" .. yaml .. "---\n"
+end
+
+-- The one header rule for every path: `write` peels before adding its own, and
+-- `read` plus the tag index peel what is already on disk, so a note written with
+-- two headers before is found by its real tags without being rewritten. Models
+-- often include a frontmatter block in `content` instead of passing `tags`, and
+-- appending ours on top buries theirs, because a header ends at the first fence.
+-- The note then lands indexed under its filename stem while its tags sit in the
+-- body as dead text, which reads as "the tool ignored my tags".
+function M.take_frontmatter(content)
+  local raw, body, stripped = {}, content, false
+  while true do
+    local fm, rest = M.parse_frontmatter(body)
+    if next(fm) == nil then
+      if #raw == 0 then
+        return nil, body, stripped
+      end
+      return M.normalize_tags(raw), body, stripped
+    end
+    stripped = true
+    for _, t in ipairs(M.extract_tags(fm) or {}) do
+      raw[#raw + 1] = t
+    end
+    body = rest
+  end
 end
 
 function M.cap_read_output(s, hint, ctx)
@@ -425,10 +471,9 @@ function M.validate_write_size(content)
 end
 
 function M.format_read_entry(name, size, content)
-  local fm, body = M.parse_frontmatter(content)
-  local tags = M.extract_tags(fm) or {}
+  local tags, body = M.take_frontmatter(content)
   local header = name .. " (" .. size .. " bytes)"
-  if #tags > 0 then
+  if tags then
     header = header .. " [" .. table.concat(tags, ", ") .. "]"
   end
   return header .. "\n\n" .. body
